@@ -1,0 +1,107 @@
+syntax = "proto3";
+
+package examples.v1;
+option go_package = "examples/v1";
+
+import "google/api/field_behavior.proto";
+import "ai/context/v1/annotations.proto";
+
+// A simple theme color supporting solid colors and gradients.
+message ThemeColor {
+  enum ThemeColorType {
+    THEME_COLOR_TYPE_UNSPECIFIED = 0;
+    THEME_COLOR_TYPE_SOLID = 1;
+    THEME_COLOR_TYPE_LINEAR = 2;
+    THEME_COLOR_TYPE_RADIAL = 3;
+  }
+
+  ThemeColorType type = 1;
+  repeated string colors = 2;
+  optional string direction = 3;
+  repeated string stops = 4;
+}
+
+// Font configuration
+message FontConfig {
+  enum FontFamily {
+    FONT_FAMILY_UNSPECIFIED = 0;
+    FONT_FAMILY_DEFAULT = 1;
+    FONT_FAMILY_ARIAL = 2;
+    FONT_FAMILY_HELVETICA = 3;
+  }
+
+  optional FontFamily family = 1;
+  optional bool bold = 2;
+  optional bool italic = 3;
+  optional ThemeColor color = 4;
+  optional int32 font_size = 5;
+}
+
+// Request to update a page theme
+message UpdatePageThemeRequest {
+  // Page theme ID to update
+  string id = 1 [(google.api.field_behavior) = REQUIRED];
+
+  // Canvas background color
+  optional ThemeColor canvas_color = 2;
+
+  // Button/accent color
+  optional ThemeColor element_color = 3;
+
+  // Title font settings
+  optional FontConfig title_font = 4;
+
+  // Body font settings
+  optional FontConfig body_font = 5;
+
+  // Whether the container card is visible
+  optional bool container_enabled = 6;
+}
+
+message UpdatePageThemeResponse {
+  string id = 1;
+}
+
+// Request to create a link
+message CreateLinkRequest {
+  // The destination URL (required)
+  string destination = 1 [(google.api.field_behavior) = REQUIRED];
+
+  // Display name for the link
+  string name = 2;
+
+  // Tags for organization
+  repeated string tags = 3;
+
+  // Custom metadata key-value pairs
+  map<string, string> metadata = 4;
+
+  // Enable conversion tracking
+  optional bool conversion_tracking = 5;
+}
+
+message CreateLinkResponse {
+  string id = 1;
+  string shortlink = 2;
+}
+
+// Example service with annotated RPCs
+service ExampleService {
+  // Update a page theme's visual styling
+  rpc UpdatePageTheme(UpdatePageThemeRequest) returns (UpdatePageThemeResponse) {
+    option (ai.context.v1.rpc_tool) = {
+      name: "page_themes_update"
+      description: "Update a page theme's colors, fonts, and container settings."
+      strict: true
+    };
+  };
+
+  // Create a new shortened link
+  rpc CreateLink(CreateLinkRequest) returns (CreateLinkResponse) {
+    option (ai.context.v1.rpc_tool) = {
+      name: "links_create"
+      description: "Create a new shortened link with optional tags and metadata."
+      strict: true
+    };
+  };
+}

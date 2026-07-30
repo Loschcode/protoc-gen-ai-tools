@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package ai.tools.v1;
+
+option go_package = "github.com/Loschcode/protoc-gen-ai-tools/ai/tools/v1;ai_tools_v1";
+
+import "google/protobuf/descriptor.proto";
+
+// ToolDefinition describes an AI agent tool backed by an RPC method.
+// The protoc-gen-ai-tools plugin uses this to generate Go AgentTool
+// definitions with JSON Schema parameters derived from the request message.
+message ToolDefinition {
+  // Tool name used by the AI agent (e.g. "page_themes_update").
+  string name = 1;
+
+  // Human-readable description shown to the LLM.
+  string description = 2;
+
+  // Whether to enforce strict parameter validation (additionalProperties: false).
+  bool strict = 3;
+
+  // When true, generate an executor function that calls the gRPC service
+  // directly (unmarshal args → call RPC → marshal response). Tools without
+  // this flag only get the tool definition generated.
+  bool auto_execute = 4;
+}
+
+extend google.protobuf.MethodOptions {
+  ToolDefinition rpc_tool = 52104;
+}

@@ -18,6 +18,7 @@ type ToolDefinition struct {
 	Name        string
 	Description string
 	Strict      bool
+	AutoExecute bool
 }
 
 // ToolFromMethod extracts the ToolDefinition annotation from a method.
@@ -195,8 +196,11 @@ func parseToolDefinition(raw []byte) ToolDefinition {
 			if m < 0 {
 				return out
 			}
-			if num == 3 {
+			switch num {
+			case 3:
 				out.Strict = v > 0
+			case 4:
+				out.AutoExecute = v > 0
 			}
 			raw = raw[m:]
 		default:

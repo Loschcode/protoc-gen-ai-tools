@@ -53,6 +53,8 @@ func FieldDescription(field protoreflect.FieldDescriptor) string {
 const toolFieldNumber protowire.Number = 52105
 
 // IsToolSkipped checks if a field has (ai.tools.v1.tool_field).skip = true.
+// Uses pure wire format parsing to avoid importing generated types (which
+// conflicts with the proto registry when running as a protoc plugin).
 func IsToolSkipped(field protoreflect.FieldDescriptor) bool {
 	opts, ok := field.Options().(*descriptorpb.FieldOptions)
 	if !ok || opts == nil {

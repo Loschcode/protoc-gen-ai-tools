@@ -1,0 +1,92 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  version-tag:
+    name: Create Version Tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Run Tests
+        run: go test ./...
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Calculate Version and Create Tag
+        run: |
+          COMMIT_MSG=$(git log -1 --pretty=%B)
+          echo "Commit message: $COMMIT_MSG"
+
+          CURRENT_TAG=$(git tag --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+          CURRENT_TAG=${CURRENT_TAG:-v0.0.0}
+          echo "Current tag: $CURRENT_TAG"
+
+          VERSION=${CURRENT_TAG#v}
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+
+          BUMP_TYPE="none"
+
+          if echo "$COMMIT_MSG" | grep -q "BREAKING CHANGE:"; then
+            BUMP_TYPE="major"
+          elif echo "$COMMIT_MSG" | grep -qE "^(feat|fix)!(\(.*\))?:"; then
+            BUMP_TYPE="major"
+          elif echo "$COMMIT_MSG" | grep -qE "^feat(\(.*\))?:"; then
+            BUMP_TYPE="minor"
+          elif echo "$COMMIT_MSG" | grep -qE "^fix(\(.*\))?:"; then
+            BUMP_TYPE="patch"
+          fi
+
+          echo "Bump type: $BUMP_TYPE"
+
+          if [ "$BUMP_TYPE" = "major" ]; then
+            MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0
+          elif [ "$BUMP_TYPE" = "minor" ]; then
+            MINOR=$((MINOR + 1)); PATCH=0
+          elif [ "$BUMP_TYPE" = "patch" ]; then
+            PATCH=$((PATCH + 1))
+          else
+            echo "No version bump needed. Skipping."
+            exit 0
+          fi
+
+          NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+          echo "New tag: $NEW_TAG"
+
+          if git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
+            echo "Tag $NEW_TAG already exists. Skipping."
+            exit 0
+          fi
+
+          git tag -a "$NEW_TAG" -m "Release $NEW_TAG"
+          git push origin "$NEW_TAG"
+          echo "Released $NEW_TAG ($BUMP_TYPE bump from $CURRENT_TAG)"
+
+      - name: Create GitHub Release
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NEW_TAG=$(git tag --sort=-version:refname | head -1)
+          if [ -n "$NEW_TAG" ]; then
+            gh release create "$NEW_TAG" --generate-notes --title "$NEW_TAG" || true
+          fi

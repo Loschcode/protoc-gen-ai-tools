@@ -224,6 +224,59 @@ The field remains fully available in the gRPC/REST API and SDKs — only the AI 
 - Internal/debug fields the AI has no use for
 - Fields with complex types that confuse the LLM
 
+### Transparent UUID aliasing
+
+LLMs struggle with raw UUIDs — they copy them wrong, mix them up, or invent fake ones. The `alias_prefix` annotation solves this by transparently replacing UUIDs with human-readable aliases:
+
+```proto
+message CreateLinkRequest {
+  string destination = 1;
+  string name = 2;
+  
+  // This ID will appear as "link-1", "link-2", etc. to the LLM
+  string id = 3 [(ai.tools.v1.tool_field).alias_prefix = "link"];
+}
+
+message CreateWorkflowStepRequest {
+  // Resolves against the same "link" alias map
+  string link_id = 1 [(ai.tools.v1.tool_field).alias_prefix = "link"];
+  
+  // Separate counter: "step-1", "step-2", etc.
+  string id = 2 [(ai.tools.v1.tool_field).alias_prefix = "step"];
+}
+```
+
+The aliasing is **fully mechanical** — no prompt engineering needed:
+
+```
+gRPC response: {"id": "d290f1ee-6c54-4b01-90e6-d701748f0851"}
+                            ↓ AliasManager (UUID → alias)
+LLM sees:      {"id": "link-1"}
+
+LLM responds:  {"link_id": "link-1", ...}
+                            ↓ AliasManager (alias → UUID)
+gRPC request:  {"link_id": "d290f1ee-6c54-4b01-90e6-d701748f0851", ...}
+```
+
+How it works:
+- **Outbound** (gRPC response → LLM): all UUIDs in the response are auto-registered with the field's prefix and replaced with aliases
+- **Inbound** (LLM → gRPC request): all aliases in the args are resolved back to UUIDs before calling gRPC
+- Fields with the **same prefix** share the same alias counter — so `link_id` on `CreateWorkflowStepRequest` resolves against the same map as `id` on `CreateLinkResponse`
+- The `AliasManager` is per-executor instance (per conversation), thread-safe
+- New UUIDs in responses are auto-detected via regex and registered on the fly
+
+Access the alias manager for manual tools:
+```go
+executor := gentools.NewExecutor(grpcConn)
+aliasManager := executor.GetAliasManager()
+
+// Register a UUID manually
+alias := aliasManager.Register("link", "d290f1ee-...")  // returns "link-1"
+
+// Resolve an alias
+uuid := aliasManager.ResolveAlias("link-1")  // returns "d290f1ee-..."
+```
+
 ## Companion plugin
 
 This plugin pairs with [protoc-gen-ai-context](https://github.com/Loschcode/protoc-gen-ai-context), which generates **knowledge markdown** from proto annotations. Together they make proto files the single source of truth for AI agent behavior:

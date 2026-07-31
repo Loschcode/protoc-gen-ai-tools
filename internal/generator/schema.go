@@ -58,12 +58,7 @@ func (sg *SchemaGenerator) messageSchema(msg protoreflect.MessageDescriptor) map
 		schema := sg.fieldSchema(field)
 		isOptional := field.HasOptionalKeyword() || field.ContainingOneof() != nil
 
-		// Add description from field_context annotation or proto comments.
-		desc := annotations.FieldDescription(field)
-		if desc == "" {
-			si := field.ParentFile().SourceLocations().ByDescriptor(field)
-			desc = strings.TrimSpace(si.LeadingComments)
-		}
+		desc := sg.fieldDescription(field)
 
 		if desc != "" {
 			schema["description"] = desc
@@ -220,5 +215,46 @@ func (sg *SchemaGenerator) wellKnownType(msg protoreflect.MessageDescriptor) map
 		return map[string]any{"type": "string", "format": "byte"}
 	default:
 		return nil
+	}
+}
+
+// fieldDescription composes the description the model sees for a field.
+//
+// A leading comment serves developers, the OpenAPI spec and the model at once,
+// so behavioural coaching written there leaks into a public API reference. The
+// tool_field annotation gives the model its own channel:
+//
+//	description  replaces the comment outright (use sparingly)
+//	usage_notes  is appended to it (the common case)
+func (sg *SchemaGenerator) fieldDescription(field protoreflect.FieldDescriptor) string {
+	opts := annotations.GetToolFieldOpts(field)
+
+	desc := opts.Description
+	if desc == "" {
+		desc = annotations.FieldDescription(field)
+	}
+	if desc == "" {
+		si := field.ParentFile().SourceLocations().ByDescriptor(field)
+		desc = strings.TrimSpace(si.LeadingComments)
+	}
+
+	return composeDescription(desc, opts.UsageNotes, "")
+}
+
+// composeDescription joins a factual description with LLM-only usage notes.
+// override, when non-empty, replaces the description before notes are applied.
+func composeDescription(desc, usageNotes, override string) string {
+	if override != "" {
+		desc = override
+	}
+	desc = strings.TrimSpace(desc)
+	notes := strings.TrimSpace(usageNotes)
+	switch {
+	case notes == "":
+		return desc
+	case desc == "":
+		return notes
+	default:
+		return desc + "\n\n" + notes
 	}
 }

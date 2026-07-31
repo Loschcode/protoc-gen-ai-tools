@@ -56,6 +56,8 @@ const toolFieldNumber protowire.Number = 52105
 type ToolFieldOpts struct {
 	Skip        bool
 	AliasPrefix string // e.g. "link", "step" — empty means no aliasing
+	UsageNotes  string // appended to the schema description, LLM-only
+	Description string // replaces the schema description, LLM-only
 }
 
 // GetToolFieldOpts extracts ToolFieldOptions from a field descriptor.
@@ -77,7 +79,8 @@ func IsToolSkipped(field protoreflect.FieldDescriptor) bool {
 	return GetToolFieldOpts(field).Skip
 }
 
-// parseToolFieldOpts parses ToolFieldOptions: field 1 = skip (varint), field 2 = alias_prefix (bytes).
+// parseToolFieldOpts parses ToolFieldOptions: field 1 = skip (varint),
+// 2 = alias_prefix, 3 = usage_notes, 4 = description (all bytes).
 func parseToolFieldOpts(raw []byte) ToolFieldOpts {
 	var out ToolFieldOpts
 	for len(raw) > 0 {
@@ -101,8 +104,13 @@ func parseToolFieldOpts(raw []byte) ToolFieldOpts {
 			if m < 0 {
 				return out
 			}
-			if num == 2 {
+			switch num {
+			case 2:
 				out.AliasPrefix = string(b)
+			case 3:
+				out.UsageNotes = string(b)
+			case 4:
+				out.Description = string(b)
 			}
 			raw = raw[m:]
 		default:
@@ -326,4 +334,15 @@ func consumeField(typ protowire.Type, raw []byte) int {
 	default:
 		return -1
 	}
+}
+
+// ParseToolFieldOptions extracts ToolFieldOptions from raw FieldOptions bytes.
+// Exposed so the generator's tests can build descriptors by hand and exercise
+// the same wire parsing the plugin uses at generation time.
+func ParseToolFieldOptions(fieldOptionsRaw []byte) ToolFieldOpts {
+	ext := findExtension(fieldOptionsRaw, toolFieldNumber)
+	if ext == nil {
+		return ToolFieldOpts{}
+	}
+	return parseToolFieldOpts(ext)
 }

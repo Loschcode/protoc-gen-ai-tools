@@ -200,6 +200,49 @@ func toJSON(t gentools.AgentTool) map[string]any {
 
 When `strict: true`, all objects get `"additionalProperties": false`.
 
+### Field guidance for the model only
+
+A field's leading comment is read by three audiences at once: developers using the generated structs, consumers of your OpenAPI spec, and the model. Behavioural coaching written there ships into your public API reference:
+
+```proto
+// The shortlink for the link.
+// Send this empty unless the user asked for one — inventing a slug risks a
+// collision and fails the creation.        // ← now in your public swagger
+string shortlink = 4;
+```
+
+Keep the comment factual and put the coaching in `usage_notes`, which is appended to the description in the tool schema and nowhere else:
+
+```proto
+// The shortlink (URL slug) for the link.
+string shortlink = 4 [(ai.tools.v1.tool_field) = {
+  usage_notes: "Send an empty string unless the user explicitly asked for a specific slug. The system generates a unique one by default."
+}];
+```
+
+The model sees both parts, separated by a blank line; OpenAPI and the Go structs see only the comment.
+
+`description` replaces the comment outright for the model. Prefer `usage_notes` — it keeps the factual half shared. Reach for `description` only when the public wording would actively mislead a model:
+
+```proto
+string shortlink = 4 [(ai.tools.v1.tool_field) = {
+  description: "URL slug. Leave empty."
+}];
+```
+
+Precedence is `description ?? leading comment`, then `usage_notes` appended.
+
+This is deliberately the same word `usage_notes` that [protoc-gen-ai-context](https://github.com/Loschcode/protoc-gen-ai-context) uses on `message_knowledge` — message level there, field level here.
+
+When a field sets more than one option, the aggregate form reads better than repeated dotted assignments:
+
+```proto
+string link_id = 1 [(ai.tools.v1.tool_field) = {
+  alias_prefix: "link"
+  usage_notes: "Use the id returned by links_create; never invent one."
+}];
+```
+
 ### Skipping fields from the AI schema
 
 Some fields exist in the gRPC API but shouldn't be exposed to the AI (e.g., `map` fields with dynamic keys that are incompatible with strict mode, or developer-facing fields that end users never interact with).

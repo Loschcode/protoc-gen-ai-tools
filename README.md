@@ -270,7 +270,84 @@ How it works:
 - **Outbound** (gRPC response → LLM): the response JSON is walked **field by field**. Each UUID is registered under the prefix declared on *its own field*, then replaced with the alias.
 - **Inbound** (LLM → gRPC request): all aliases in the args are resolved back to UUIDs before calling gRPC
 - Fields with the **same prefix** share the same alias counter — so `link_id` on `CreateWorkflowStepRequest` resolves against the same map as `Link.id`
-- The `AliasManager` is per-executor instance (per conversation), thread-safe
+- Each `Executor` owns its own `AliasManager`. It is thread-safe, but it is **not** scoped for you — see below.
+
+### Scope one executor per conversation
+
+Aliases are sequential and per-manager: the first link registered is `link-1`, the next `link-2`. That numbering is only meaningful inside one conversation.
+
+**Do not create a single process-wide executor.** If two conversations share an `AliasManager`, whichever registers first owns `link-1`, and the other conversation's `link-1` resolves to an entity it has nothing to do with — across users and tenants. The maps also grow for the lifetime of the process, since nothing evicts them.
+
+```go
+// WRONG — one alias namespace shared by every conversation and every user.
+var executor = gentools.NewExecutor(conn)   // process-wide
+
+// RIGHT — one executor per conversation; the gRPC connection is still shared.
+executor := sessions.For(conversationID)
+```
+
+A minimal registry: key by conversation id, evict on an idle TTL so alias maps do not accumulate.
+
+```go
+type Sessions struct {
+    conn grpc.ClientConnInterface
+    ttl  time.Duration
+    mu   sync.Mutex
+    m    map[string]*entry
+}
+
+type entry struct {
+    executor *gentools.Executor
+    lastUsed time.Time
+}
+
+func (s *Sessions) For(conversationID string) *gentools.Executor {
+    // An empty id gets a throwaway executor rather than sharing one, so a
+    // missing id can never collapse separate conversations into one namespace.
+    if conversationID == "" {
+        return gentools.NewExecutor(s.conn)
+    }
+    s.mu.Lock()
+    defer s.mu.Unlock()
+    s.evictExpiredLocked()
+    if e, ok := s.m[conversationID]; ok {
+        e.lastUsed = time.Now()
+        return e.executor
+    }
+    e := &entry{executor: gentools.NewExecutor(s.conn), lastUsed: time.Now()}
+    s.m[conversationID] = e
+    return e.executor
+}
+```
+
+Aliases must persist across *turns* of the same conversation — that is what makes them usable — so the executor has to outlive a single request. It just must not outlive the conversation.
+
+### Applying aliases to hand-written tools
+
+Generated executors resolve and aliasify internally. Tools you write by hand (a UI helper, a knowledge lookup, anything not backed by an annotated RPC) bypass that, so an alias handed to them arrives unresolved and any UUID they return leaks straight to the model.
+
+Wrap them with the **same** `AliasManager` the generated tools use, so both sides share one namespace and IDs can move freely between manual and generated tools:
+
+```go
+executor := sessions.For(conversationID)
+aliases := executor.GetAliasManager()
+
+isGenerated := executor.CanExecute(toolName)
+if !isGenerated {
+    argsJSON = aliases.ResolveJSON(toolName, argsJSON)   // alias → UUID
+}
+
+result, err := dispatch(ctx, toolName, argsJSON)
+
+if !isGenerated {
+    result = aliases.AliasifyJSON(toolName, result)      // UUID → alias
+}
+```
+
+Two things worth knowing:
+
+- **Exclude display-only tools from inbound resolution.** If a tool's arguments are rendered to the user, resolving aliases there puts raw UUIDs on screen — the one place they must never appear.
+- **Register ids the model never called a tool for.** Context or state injected into the prompt contains UUIDs the `AliasManager` has not seen. Register those up front with `Register(prefix, uuid)` and aliasify the prompt, or the model will encounter a raw UUID and start inventing others to match.
 
 Registration is **field-aware**, driven by the response message shape. The plugin walks each RPC's response message (recursively, through nested and repeated fields) and emits two maps:
 
@@ -304,17 +381,20 @@ Two consequences worth knowing:
 
 `AliasManager.RegisterNewUUIDs(prefix, json)` — the old regex-scan-everything behaviour — is still exported for callers registering UUIDs from non-proto sources, but generated executors no longer use it: it cannot tell a link id from a workspace id.
 
-Access the alias manager for manual tools:
+Access the alias manager directly (see "Applying aliases to hand-written tools" above):
 ```go
-executor := gentools.NewExecutor(grpcConn)
+executor := sessions.For(conversationID)   // NOT a process-wide executor
 aliasManager := executor.GetAliasManager()
 
-// Register a UUID manually
+// Register a UUID manually — e.g. an id that arrived via injected context
+// rather than a tool response
 alias := aliasManager.Register("link", "d290f1ee-...")  // returns "link-1"
 
 // Resolve an alias
 uuid := aliasManager.ResolveAlias("link-1")  // returns "d290f1ee-..."
 ```
+
+Note that `ResolveAlias` returns an unrecognised input unchanged. A model that invents an alias (`step-0` is a common one, inferred from seeing `step-1` and `step-2`) will therefore send that literal string on to the API, which typically surfaces as an opaque "invalid UUID" error rather than anything the model can act on. If that matters to you, validate before dispatch and return a message naming the ids that are actually valid.
 
 ## Companion plugin
 

@@ -69,9 +69,15 @@ func (sg *SchemaGenerator) messageSchema(msg protoreflect.MessageDescriptor) map
 
 		properties[name] = schema
 
-		// A field is required unless it has the optional keyword or is in a oneof.
-		if !field.HasOptionalKeyword() && field.ContainingOneof() == nil {
+		if sg.strict {
+			// OpenAI strict mode: ALL properties must be in required.
+			// Optional fields are handled by the LLM sending null.
 			required = append(required, name)
+		} else {
+			// Non-strict: only non-optional, non-oneof fields are required.
+			if !field.HasOptionalKeyword() && field.ContainingOneof() == nil {
+				required = append(required, name)
+			}
 		}
 	}
 

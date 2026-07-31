@@ -49,6 +49,47 @@ func FieldDescription(field protoreflect.FieldDescriptor) string {
 	return parseFieldContextDescription(ext)
 }
 
+// toolFieldNumber is the extension field for FieldSkip (ai.tools.v1.tool_field).
+const toolFieldNumber protowire.Number = 52105
+
+// IsToolSkipped checks if a field has (ai.tools.v1.tool_field).skip = true.
+func IsToolSkipped(field protoreflect.FieldDescriptor) bool {
+	opts, ok := field.Options().(*descriptorpb.FieldOptions)
+	if !ok || opts == nil {
+		return false
+	}
+	raw := opts.ProtoReflect().GetUnknown()
+	ext := findExtension(raw, toolFieldNumber)
+	if ext == nil {
+		return false
+	}
+	// Parse FieldSkip message: field 1 = skip (varint/bool)
+	for len(ext) > 0 {
+		num, typ, n := protowire.ConsumeTag(ext)
+		if n < 0 {
+			return false
+		}
+		ext = ext[n:]
+		if typ == protowire.VarintType {
+			v, m := protowire.ConsumeVarint(ext)
+			if m < 0 {
+				return false
+			}
+			if num == 1 {
+				return v > 0
+			}
+			ext = ext[m:]
+		} else {
+			skip := consumeField(typ, ext)
+			if skip < 0 {
+				return false
+			}
+			ext = ext[skip:]
+		}
+	}
+	return false
+}
+
 // IsOutputOnly checks if a field has OUTPUT_ONLY field_behavior.
 // google.api.field_behavior is field 1052 on FieldOptions, a repeated enum.
 // Value 3 = OUTPUT_ONLY.

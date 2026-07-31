@@ -200,12 +200,38 @@ func toJSON(t gentools.AgentTool) map[string]any {
 
 When `strict: true`, all objects get `"additionalProperties": false`.
 
+### Skipping fields from the AI schema
+
+Some fields exist in the gRPC API but shouldn't be exposed to the AI (e.g., `map` fields with dynamic keys that are incompatible with strict mode, or developer-facing fields that end users never interact with).
+
+Use the `tool_field` annotation to exclude them:
+
+```proto
+import "ai/tools/v1/annotations.proto";
+
+message CreateLinkRequest {
+  string destination = 1;
+  string name = 2;
+  repeated string tags = 3;
+  
+  // Developer-facing metadata — skip from AI tool schema
+  map<string, string> metadata = 4 [(ai.tools.v1.tool_field).skip = true];
+}
+```
+
+The field remains fully available in the gRPC/REST API and SDKs — only the AI tool definition omits it. This is particularly useful for:
+- `map<K,V>` fields (incompatible with strict mode's `additionalProperties: false`)
+- Internal/debug fields the AI has no use for
+- Fields with complex types that confuse the LLM
+
 ## Companion plugin
 
 This plugin pairs with [protoc-gen-ai-context](https://github.com/Loschcode/protoc-gen-ai-context), which generates **knowledge markdown** from proto annotations. Together they make proto files the single source of truth for AI agent behavior:
 
 - `protoc-gen-ai-context` → `.ai.md` knowledge files (how things work)
 - `protoc-gen-ai-tools` → `.gen.go` tool definitions (what actions are available)
+
+Note: `protoc-gen-ai-context` has its own `ai_skip` annotation for excluding fields from generated markdown. That is separate from this plugin's `tool_field` annotation — `tool_field` lives in `ai/tools/v1/annotations.proto` and only affects the generated tool schema, not the context markdown.
 
 ## License
 

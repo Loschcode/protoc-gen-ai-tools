@@ -49,8 +49,8 @@ func (sg *SchemaGenerator) messageSchema(msg protoreflect.MessageDescriptor) map
 	for i := 0; i < fields.Len(); i++ {
 		field := fields.Get(i)
 
-		// Skip OUTPUT_ONLY fields entirely.
-		if annotations.IsOutputOnly(field) {
+		// Skip OUTPUT_ONLY fields and tool-skipped fields.
+		if annotations.IsOutputOnly(field) || annotations.IsToolSkipped(field) {
 			continue
 		}
 
@@ -107,16 +107,10 @@ func (sg *SchemaGenerator) messageSchema(msg protoreflect.MessageDescriptor) map
 }
 
 func (sg *SchemaGenerator) fieldSchema(field protoreflect.FieldDescriptor) map[string]any {
-	// Map fields: map<K,V>
+	// Map fields: map<K,V> → {"type": "object", "additionalProperties": <V>}
+	// Note: map fields are incompatible with strict mode. Use
+	// (ai.tools.v1.tool_field).skip = true on map fields when strict is on.
 	if field.IsMap() {
-		if sg.strict {
-			// Strict mode doesn't allow additionalProperties other than false.
-			// Convert map to a JSON string that the LLM sends as stringified JSON.
-			return map[string]any{
-				"type":        "string",
-				"description": "JSON-encoded key-value object",
-			}
-		}
 		valueField := field.MapValue()
 		valueSchema := sg.singularSchema(valueField)
 		return map[string]any{

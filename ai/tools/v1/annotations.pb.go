@@ -99,6 +99,55 @@ func (x *ToolDefinition) GetAutoExecute() bool {
 	return false
 }
 
+// FieldSkip marks a field to be excluded from the AI tool schema.
+// Use for developer-facing fields (e.g. metadata maps with dynamic keys)
+// that are incompatible with strict mode or not useful for end users
+// interacting through the AI assistant. The field remains in the
+// gRPC/REST API — only the generated tool definition omits it.
+type FieldSkip struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Skip          bool                   `protobuf:"varint,1,opt,name=skip,proto3" json:"skip,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FieldSkip) Reset() {
+	*x = FieldSkip{}
+	mi := &file_proto_ai_tools_v1_annotations_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FieldSkip) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FieldSkip) ProtoMessage() {}
+
+func (x *FieldSkip) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_ai_tools_v1_annotations_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FieldSkip.ProtoReflect.Descriptor instead.
+func (*FieldSkip) Descriptor() ([]byte, []int) {
+	return file_proto_ai_tools_v1_annotations_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *FieldSkip) GetSkip() bool {
+	if x != nil {
+		return x.Skip
+	}
+	return false
+}
+
 var file_proto_ai_tools_v1_annotations_proto_extTypes = []protoimpl.ExtensionInfo{
 	{
 		ExtendedType:  (*descriptorpb.MethodOptions)(nil),
@@ -108,12 +157,26 @@ var file_proto_ai_tools_v1_annotations_proto_extTypes = []protoimpl.ExtensionInf
 		Tag:           "bytes,52104,opt,name=rpc_tool",
 		Filename:      "proto/ai/tools/v1/annotations.proto",
 	},
+	{
+		ExtendedType:  (*descriptorpb.FieldOptions)(nil),
+		ExtensionType: (*FieldSkip)(nil),
+		Field:         52105,
+		Name:          "ai.tools.v1.tool_field",
+		Tag:           "bytes,52105,opt,name=tool_field",
+		Filename:      "proto/ai/tools/v1/annotations.proto",
+	},
 }
 
 // Extension fields to descriptorpb.MethodOptions.
 var (
 	// optional ai.tools.v1.ToolDefinition rpc_tool = 52104;
 	E_RpcTool = &file_proto_ai_tools_v1_annotations_proto_extTypes[0]
+)
+
+// Extension fields to descriptorpb.FieldOptions.
+var (
+	// optional ai.tools.v1.FieldSkip tool_field = 52105;
+	E_ToolField = &file_proto_ai_tools_v1_annotations_proto_extTypes[1]
 )
 
 var File_proto_ai_tools_v1_annotations_proto protoreflect.FileDescriptor
@@ -125,8 +188,12 @@ const file_proto_ai_tools_v1_annotations_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12\x16\n" +
 	"\x06strict\x18\x03 \x01(\bR\x06strict\x12!\n" +
-	"\fauto_execute\x18\x04 \x01(\bR\vautoExecute:X\n" +
-	"\brpc_tool\x12\x1e.google.protobuf.MethodOptions\x18\x88\x97\x03 \x01(\v2\x1b.ai.tools.v1.ToolDefinitionR\arpcToolBBZ@github.com/Loschcode/protoc-gen-ai-tools/ai/tools/v1;ai_tools_v1b\x06proto3"
+	"\fauto_execute\x18\x04 \x01(\bR\vautoExecute\"\x1f\n" +
+	"\tFieldSkip\x12\x12\n" +
+	"\x04skip\x18\x01 \x01(\bR\x04skip:X\n" +
+	"\brpc_tool\x12\x1e.google.protobuf.MethodOptions\x18\x88\x97\x03 \x01(\v2\x1b.ai.tools.v1.ToolDefinitionR\arpcTool:V\n" +
+	"\n" +
+	"tool_field\x12\x1d.google.protobuf.FieldOptions\x18\x89\x97\x03 \x01(\v2\x16.ai.tools.v1.FieldSkipR\ttoolFieldBBZ@github.com/Loschcode/protoc-gen-ai-tools/ai/tools/v1;ai_tools_v1b\x06proto3"
 
 var (
 	file_proto_ai_tools_v1_annotations_proto_rawDescOnce sync.Once
@@ -140,18 +207,22 @@ func file_proto_ai_tools_v1_annotations_proto_rawDescGZIP() []byte {
 	return file_proto_ai_tools_v1_annotations_proto_rawDescData
 }
 
-var file_proto_ai_tools_v1_annotations_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
+var file_proto_ai_tools_v1_annotations_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
 var file_proto_ai_tools_v1_annotations_proto_goTypes = []any{
 	(*ToolDefinition)(nil),             // 0: ai.tools.v1.ToolDefinition
-	(*descriptorpb.MethodOptions)(nil), // 1: google.protobuf.MethodOptions
+	(*FieldSkip)(nil),                  // 1: ai.tools.v1.FieldSkip
+	(*descriptorpb.MethodOptions)(nil), // 2: google.protobuf.MethodOptions
+	(*descriptorpb.FieldOptions)(nil),  // 3: google.protobuf.FieldOptions
 }
 var file_proto_ai_tools_v1_annotations_proto_depIdxs = []int32{
-	1, // 0: ai.tools.v1.rpc_tool:extendee -> google.protobuf.MethodOptions
-	0, // 1: ai.tools.v1.rpc_tool:type_name -> ai.tools.v1.ToolDefinition
-	2, // [2:2] is the sub-list for method output_type
-	2, // [2:2] is the sub-list for method input_type
-	1, // [1:2] is the sub-list for extension type_name
-	0, // [0:1] is the sub-list for extension extendee
+	2, // 0: ai.tools.v1.rpc_tool:extendee -> google.protobuf.MethodOptions
+	3, // 1: ai.tools.v1.tool_field:extendee -> google.protobuf.FieldOptions
+	0, // 2: ai.tools.v1.rpc_tool:type_name -> ai.tools.v1.ToolDefinition
+	1, // 3: ai.tools.v1.tool_field:type_name -> ai.tools.v1.FieldSkip
+	4, // [4:4] is the sub-list for method output_type
+	4, // [4:4] is the sub-list for method input_type
+	2, // [2:4] is the sub-list for extension type_name
+	0, // [0:2] is the sub-list for extension extendee
 	0, // [0:0] is the sub-list for field type_name
 }
 
@@ -166,8 +237,8 @@ func file_proto_ai_tools_v1_annotations_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_ai_tools_v1_annotations_proto_rawDesc), len(file_proto_ai_tools_v1_annotations_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   1,
-			NumExtensions: 1,
+			NumMessages:   2,
+			NumExtensions: 2,
 			NumServices:   0,
 		},
 		GoTypes:           file_proto_ai_tools_v1_annotations_proto_goTypes,

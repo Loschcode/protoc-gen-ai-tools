@@ -31,6 +31,7 @@ type ToolInfo struct {
 	OutputTypeName string
 	GoImportPath   string
 	AliasFields    []AliasField // fields that need alias resolution
+	OutputPrefix   string       // prefix for new UUIDs in responses (from "id" field)
 }
 
 // Collector gathers annotated RPCs across proto files.
@@ -62,6 +63,7 @@ func (c *Collector) CollectFile(file *protogen.File) {
 
 			// Collect alias fields from the request message
 			var aliasFields []AliasField
+			var outputPrefix string
 			fields := method.Input.Desc.Fields()
 			for i := 0; i < fields.Len(); i++ {
 				f := fields.Get(i)
@@ -71,7 +73,16 @@ func (c *Collector) CollectFile(file *protogen.File) {
 						FieldName:   string(f.Name()),
 						AliasPrefix: opts.AliasPrefix,
 					})
+					// The "id" field (not "link_id", "step_id") is the entity
+					// being created/updated — use its prefix for new UUIDs in responses.
+					if string(f.Name()) == "id" {
+						outputPrefix = opts.AliasPrefix
+					}
 				}
+			}
+			// Fallback: if no "id" field, use the first alias prefix
+			if outputPrefix == "" && len(aliasFields) > 0 {
+				outputPrefix = aliasFields[0].AliasPrefix
 			}
 
 			c.tools = append(c.tools, ToolInfo{
@@ -87,6 +98,7 @@ func (c *Collector) CollectFile(file *protogen.File) {
 				OutputTypeName: method.Output.GoIdent.GoName,
 				GoImportPath:   string(method.Input.GoIdent.GoImportPath),
 				AliasFields:    aliasFields,
+				OutputPrefix:   outputPrefix,
 			})
 		}
 	}
@@ -256,10 +268,8 @@ func (c *Collector) Generate() string {
 			b.WriteString("\t\treturn \"\", fmt.Errorf(\"failed to marshal response: %w\", err)\n")
 			b.WriteString("\t}\n")
 			if hasAliases {
-				b.WriteString(fmt.Sprintf("\tif prefixes, ok := toolAliasPrefixes[%q]; ok {\n", t.Name))
-				b.WriteString("\t\tfor _, prefix := range prefixes {\n")
-				b.WriteString("\t\t\te.aliases.RegisterNewUUIDs(prefix, string(out))\n")
-				b.WriteString("\t\t}\n")
+				b.WriteString(fmt.Sprintf("\tif prefix, ok := toolOutputPrefix[%q]; ok && prefix != \"\" {\n", t.Name))
+				b.WriteString("\t\te.aliases.RegisterNewUUIDs(prefix, string(out))\n")
 				b.WriteString("\t}\n")
 				b.WriteString(fmt.Sprintf("\treturn e.aliases.AliasifyJSON(%q, string(out)), nil\n", t.Name))
 			} else {
@@ -376,44 +386,27 @@ func (c *Collector) generateAliasManager(b *strings.Builder) {
 
 // generateToolAliasPrefixes writes the toolAliasPrefixes map variable.
 func (c *Collector) generateToolAliasPrefixes(b *strings.Builder, autoTools []ToolInfo) {
-	// Collect unique prefixes per tool.
-	type toolPrefixes struct {
-		name     string
-		prefixes []string
-	}
-
-	var entries []toolPrefixes
+	// Collect output prefix per tool (prefix from the "id" field).
+	hasEntries := false
 	for _, t := range autoTools {
-		if len(t.AliasFields) == 0 {
-			continue
+		if t.OutputPrefix != "" {
+			hasEntries = true
+			break
 		}
-		seen := make(map[string]bool)
-		var prefixes []string
-		for _, af := range t.AliasFields {
-			if !seen[af.AliasPrefix] {
-				seen[af.AliasPrefix] = true
-				prefixes = append(prefixes, af.AliasPrefix)
-			}
-		}
-		sort.Strings(prefixes)
-		entries = append(entries, toolPrefixes{name: t.Name, prefixes: prefixes})
 	}
 
-	if len(entries) == 0 {
+	if !hasEntries {
 		return
 	}
 
-	b.WriteString("\n// toolAliasPrefixes maps tool names to the alias prefixes they produce in responses.\n")
-	b.WriteString("var toolAliasPrefixes = map[string][]string{\n")
-	for _, e := range entries {
-		b.WriteString(fmt.Sprintf("\t%q: {", e.name))
-		for i, p := range e.prefixes {
-			if i > 0 {
-				b.WriteString(", ")
-			}
-			b.WriteString(fmt.Sprintf("%q", p))
+	b.WriteString("\n// toolOutputPrefix maps tool names to the single prefix used for registering\n")
+	b.WriteString("// new UUIDs from responses. This is the prefix from the 'id' field (the entity\n")
+	b.WriteString("// being created/updated), not from reference fields like 'link_id'.\n")
+	b.WriteString("var toolOutputPrefix = map[string]string{\n")
+	for _, t := range autoTools {
+		if t.OutputPrefix != "" {
+			b.WriteString(fmt.Sprintf("\t%q: %q,\n", t.Name, t.OutputPrefix))
 		}
-		b.WriteString("},\n")
 	}
 	b.WriteString("}\n")
 }

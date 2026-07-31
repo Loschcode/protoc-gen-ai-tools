@@ -3,10 +3,12 @@ package generator
 import (
 	"encoding/json"
 	"fmt"
+	"go/format"
 	"sort"
 	"strings"
 
 	"google.golang.org/protobuf/compiler/protogen"
+	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"github.com/Loschcode/protoc-gen-ai-tools/internal/annotations"
 )
@@ -31,7 +33,14 @@ type ToolInfo struct {
 	OutputTypeName string
 	GoImportPath   string
 	AliasFields    []AliasField // fields that need alias resolution
-	OutputPrefix   string       // prefix for new UUIDs in responses (from "id" field)
+	// OutputPrefix is the primary prefix for the entity returned by this RPC.
+	// It is derived from the id field of the top-level entity in the RESPONSE
+	// message, falling back to the request-derived prefix.
+	OutputPrefix string
+	// ResponseFieldPrefixes maps JSON field names found anywhere in the
+	// response message to the alias prefix declared on that field.
+	// A key of "id" always maps to "" meaning "use the tool's primary prefix".
+	ResponseFieldPrefixes map[string]string
 }
 
 // Collector gathers annotated RPCs across proto files.
@@ -85,6 +94,15 @@ func (c *Collector) CollectFile(file *protogen.File) {
 				outputPrefix = aliasFields[0].AliasPrefix
 			}
 
+			// The response is the source of truth for what gets registered.
+			// The primary prefix comes from the response's own entity (e.g.
+			// CreateLinkResponse.link.id -> "link"), and only falls back to the
+			// request-derived prefix when the response declares none.
+			responsePrefixes := collectResponseFieldPrefixes(method.Output.Desc)
+			if p := responsePrimaryPrefix(method.Output.Desc); p != "" {
+				outputPrefix = p
+			}
+
 			c.tools = append(c.tools, ToolInfo{
 				VarName:        snakeToPascal(td.Name),
 				Name:           td.Name,
@@ -99,9 +117,115 @@ func (c *Collector) CollectFile(file *protogen.File) {
 				GoImportPath:   string(method.Input.GoIdent.GoImportPath),
 				AliasFields:    aliasFields,
 				OutputPrefix:   outputPrefix,
+
+				ResponseFieldPrefixes: responsePrefixes,
 			})
 		}
 	}
+}
+
+// primaryPrefixSentinel is the value stored for the ambiguous "id" JSON field:
+// an empty prefix tells the runtime to use the tool's primary prefix.
+const primaryPrefixSentinel = ""
+
+// collectResponseFieldPrefixes walks a response message (recursively, through
+// nested and repeated messages) and returns a map of camelCase JSON field name
+// to alias prefix, as declared by (ai.tools.v1.tool_field).alias_prefix.
+//
+// Responses are marshaled with protojson, which emits JSON names, so the JSON
+// name is the key the runtime walker will see.
+func collectResponseFieldPrefixes(msg protoreflect.MessageDescriptor) map[string]string {
+	out := make(map[string]string)
+	visited := make(map[protoreflect.FullName]bool)
+	walkResponseFields(msg, visited, out)
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func walkResponseFields(msg protoreflect.MessageDescriptor, visited map[protoreflect.FullName]bool, out map[string]string) {
+	if msg == nil {
+		return
+	}
+	name := msg.FullName()
+	if visited[name] || strings.HasPrefix(string(name), "google.protobuf.") {
+		return
+	}
+	visited[name] = true
+
+	fields := msg.Fields()
+	for i := 0; i < fields.Len(); i++ {
+		f := fields.Get(i)
+
+		if prefix := annotations.GetToolFieldOpts(f).AliasPrefix; prefix != "" {
+			jsonName := f.JSONName()
+			if jsonName == "id" {
+				// A bare "id" is ambiguous — it means a different entity
+				// depending on where it sits in the response. The runtime uses
+				// the tool's primary prefix for it.
+				out[jsonName] = primaryPrefixSentinel
+			} else if _, exists := out[jsonName]; !exists {
+				out[jsonName] = prefix
+			}
+		}
+
+		if f.IsMap() {
+			if v := f.MapValue(); v.Kind() == protoreflect.MessageKind || v.Kind() == protoreflect.GroupKind {
+				walkResponseFields(v.Message(), visited, out)
+			}
+			continue
+		}
+
+		if f.Kind() == protoreflect.MessageKind || f.Kind() == protoreflect.GroupKind {
+			walkResponseFields(f.Message(), visited, out)
+		}
+	}
+}
+
+// responsePrimaryPrefix derives the prefix of the primary entity a response
+// carries: the alias prefix on the "id" field of the top-level entity.
+// e.g. CreateLinkResponse.link.id -> "link";
+// ListWorkflowStepsResponse.workflow_steps[].id -> "step".
+// Returns "" when the response declares no such field.
+func responsePrimaryPrefix(msg protoreflect.MessageDescriptor) string {
+	if msg == nil {
+		return ""
+	}
+	fields := msg.Fields()
+
+	// A top-level "id" on the response itself wins.
+	for i := 0; i < fields.Len(); i++ {
+		f := fields.Get(i)
+		if f.JSONName() == "id" {
+			if prefix := annotations.GetToolFieldOpts(f).AliasPrefix; prefix != "" {
+				return prefix
+			}
+		}
+	}
+
+	// Otherwise, the "id" of the first nested entity that declares one.
+	for i := 0; i < fields.Len(); i++ {
+		f := fields.Get(i)
+		if f.IsMap() || (f.Kind() != protoreflect.MessageKind && f.Kind() != protoreflect.GroupKind) {
+			continue
+		}
+		nested := f.Message()
+		if nested == nil || strings.HasPrefix(string(nested.FullName()), "google.protobuf.") {
+			continue
+		}
+		nestedFields := nested.Fields()
+		for j := 0; j < nestedFields.Len(); j++ {
+			nf := nestedFields.Get(j)
+			if nf.JSONName() != "id" {
+				continue
+			}
+			if prefix := annotations.GetToolFieldOpts(nf).AliasPrefix; prefix != "" {
+				return prefix
+			}
+		}
+	}
+	return ""
 }
 
 // Generate produces Go source code with all collected tool definitions.
@@ -127,10 +251,11 @@ func (c *Collector) Generate() string {
 	}
 	hasExecutors := len(autoTools) > 0
 
-	// Check if any tool has alias fields.
+	// Check if any tool participates in aliasing, either on the request side
+	// (alias resolution) or the response side (alias registration).
 	hasAliases := false
 	for _, t := range c.tools {
-		if len(t.AliasFields) > 0 {
+		if len(t.AliasFields) > 0 || len(t.ResponseFieldPrefixes) > 0 || t.OutputPrefix != "" {
 			hasAliases = true
 			break
 		}
@@ -149,6 +274,7 @@ func (c *Collector) Generate() string {
 		b.WriteString("\t\"fmt\"\n")
 		if hasAliases {
 			b.WriteString("\t\"regexp\"\n")
+			b.WriteString("\t\"sort\"\n")
 			b.WriteString("\t\"strings\"\n")
 			b.WriteString("\t\"sync\"\n")
 		}
@@ -172,6 +298,7 @@ func (c *Collector) Generate() string {
 		b.WriteString("\t\"encoding/json\"\n")
 		b.WriteString("\t\"fmt\"\n")
 		b.WriteString("\t\"regexp\"\n")
+		b.WriteString("\t\"sort\"\n")
 		b.WriteString("\t\"strings\"\n")
 		b.WriteString("\t\"sync\"\n")
 		b.WriteString(")\n\n")
@@ -268,9 +395,7 @@ func (c *Collector) Generate() string {
 			b.WriteString("\t\treturn \"\", fmt.Errorf(\"failed to marshal response: %w\", err)\n")
 			b.WriteString("\t}\n")
 			if hasAliases {
-				b.WriteString(fmt.Sprintf("\tif prefix, ok := toolOutputPrefix[%q]; ok && prefix != \"\" {\n", t.Name))
-				b.WriteString("\t\te.aliases.RegisterNewUUIDs(prefix, string(out))\n")
-				b.WriteString("\t}\n")
+				b.WriteString(fmt.Sprintf("\te.aliases.RegisterFieldsFromJSON(toolOutputPrefix[%q], string(out))\n", t.Name))
 				b.WriteString(fmt.Sprintf("\treturn e.aliases.AliasifyJSON(%q, string(out)), nil\n", t.Name))
 			} else {
 				b.WriteString("\treturn string(out), nil\n")
@@ -306,7 +431,16 @@ func (c *Collector) Generate() string {
 		b.WriteString("}\n")
 	}
 
-	return strings.TrimRight(b.String(), "\n")
+	src := b.String()
+
+	// Normalize alignment/spacing so the output is gofmt-clean regardless of
+	// how the fragments above are spaced. If it somehow does not parse, fall
+	// back to the raw source so the failure is visible in the generated file.
+	if formatted, err := format.Source([]byte(src)); err == nil {
+		src = string(formatted)
+	}
+
+	return strings.TrimRight(src, "\n")
 }
 
 // generateAliasManager writes the AliasManager struct and methods.
@@ -376,37 +510,130 @@ func (c *Collector) generateAliasManager(b *strings.Builder) {
 
 	b.WriteString("\nvar uuidPattern = regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)\n")
 
-	b.WriteString("\n// RegisterNewUUIDs scans a JSON string for UUID patterns and registers any new ones.\n")
+	b.WriteString("\n// RegisterNewUUIDs scans a JSON string for UUID patterns and registers every\n")
+	b.WriteString("// match under a single prefix.\n")
+	b.WriteString("//\n")
+	b.WriteString("// Deprecated: this cannot tell a link id from a workspace id and aliases both\n")
+	b.WriteString("// under the same prefix. Generated executors use RegisterFieldsFromJSON.\n")
+	b.WriteString("// Kept for callers that register UUIDs from non-proto sources.\n")
 	b.WriteString("func (am *AliasManager) RegisterNewUUIDs(prefix string, jsonStr string) {\n")
 	b.WriteString("\tfor _, uuid := range uuidPattern.FindAllString(jsonStr, -1) {\n")
 	b.WriteString("\t\tam.Register(prefix, uuid)\n")
 	b.WriteString("\t}\n")
 	b.WriteString("}\n")
+
+	c.generateResponseFieldPrefixes(b)
+
+	b.WriteString("\n// RegisterFieldsFromJSON walks a JSON response and registers UUIDs using the\n")
+	b.WriteString("// prefix declared for the field that holds them. Fields missing from\n")
+	b.WriteString("// responseFieldPrefixes are skipped, so unrelated UUIDs (workspace ids,\n")
+	b.WriteString("// design ids, ...) never get an alias of the wrong entity.\n")
+	b.WriteString("//\n")
+	b.WriteString("// primaryPrefix is used for fields mapped to an empty prefix (the bare \"id\").\n")
+	b.WriteString("func (am *AliasManager) RegisterFieldsFromJSON(primaryPrefix string, jsonStr string) {\n")
+	b.WriteString("\tvar data any\n")
+	b.WriteString("\tif err := json.Unmarshal([]byte(jsonStr), &data); err != nil {\n")
+	b.WriteString("\t\treturn\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\tam.registerValue(primaryPrefix, \"\", data)\n")
+	b.WriteString("}\n")
+
+	b.WriteString("\n// registerValue recurses through a decoded JSON value, carrying down the name\n")
+	b.WriteString("// of the field the value was found under.\n")
+	b.WriteString("func (am *AliasManager) registerValue(primaryPrefix string, fieldName string, value any) {\n")
+	b.WriteString("\tswitch v := value.(type) {\n")
+	b.WriteString("\tcase map[string]any:\n")
+	b.WriteString("\t\t// Sort keys so alias numbering is deterministic.\n")
+	b.WriteString("\t\tkeys := make([]string, 0, len(v))\n")
+	b.WriteString("\t\tfor k := range v {\n")
+	b.WriteString("\t\t\tkeys = append(keys, k)\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t\tsort.Strings(keys)\n")
+	b.WriteString("\t\tfor _, k := range keys {\n")
+	b.WriteString("\t\t\tam.registerValue(primaryPrefix, k, v[k])\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\tcase []any:\n")
+	b.WriteString("\t\t// Repeated values keep the field name of the list itself.\n")
+	b.WriteString("\t\tfor _, item := range v {\n")
+	b.WriteString("\t\t\tam.registerValue(primaryPrefix, fieldName, item)\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\tcase string:\n")
+	b.WriteString("\t\tif fieldName == \"\" || uuidPattern.FindString(v) != v {\n")
+	b.WriteString("\t\t\treturn\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t\tprefix, ok := responseFieldPrefixes[fieldName]\n")
+	b.WriteString("\t\tif !ok {\n")
+	b.WriteString("\t\t\treturn\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t\tif prefix == \"\" {\n")
+	b.WriteString("\t\t\tprefix = primaryPrefix\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t\tif prefix == \"\" {\n")
+	b.WriteString("\t\t\treturn\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t\tam.Register(prefix, v)\n")
+	b.WriteString("\t}\n")
+	b.WriteString("}\n")
 }
 
-// generateToolAliasPrefixes writes the toolAliasPrefixes map variable.
+// generateToolAliasPrefixes writes the toolOutputPrefix map variable.
 func (c *Collector) generateToolAliasPrefixes(b *strings.Builder, autoTools []ToolInfo) {
-	// Collect output prefix per tool (prefix from the "id" field).
-	hasEntries := false
-	for _, t := range autoTools {
-		if t.OutputPrefix != "" {
-			hasEntries = true
-			break
-		}
-	}
-
-	if !hasEntries {
-		return
-	}
-
-	b.WriteString("\n// toolOutputPrefix maps tool names to the single prefix used for registering\n")
-	b.WriteString("// new UUIDs from responses. This is the prefix from the 'id' field (the entity\n")
-	b.WriteString("// being created/updated), not from reference fields like 'link_id'.\n")
+	b.WriteString("\n// toolOutputPrefix maps tool names to the primary prefix of the entity the\n")
+	b.WriteString("// tool returns, derived from the id field of the top-level entity in the\n")
+	b.WriteString("// response message. It is used for response fields whose prefix in\n")
+	b.WriteString("// responseFieldPrefixes is empty (i.e. the bare \"id\" field).\n")
 	b.WriteString("var toolOutputPrefix = map[string]string{\n")
 	for _, t := range autoTools {
 		if t.OutputPrefix != "" {
 			b.WriteString(fmt.Sprintf("\t%q: %q,\n", t.Name, t.OutputPrefix))
 		}
+	}
+	b.WriteString("}\n")
+}
+
+// mergedResponseFieldPrefixes merges every tool's response field prefix map
+// into a single package-level map. Tools are already sorted by name, so the
+// merge (first non-conflicting entry wins) is deterministic.
+func (c *Collector) mergedResponseFieldPrefixes() map[string]string {
+	merged := make(map[string]string)
+	for _, t := range c.tools {
+		for field, prefix := range t.ResponseFieldPrefixes {
+			if prefix == primaryPrefixSentinel {
+				// The ambiguous "id" always defers to the tool's primary prefix.
+				merged[field] = primaryPrefixSentinel
+				continue
+			}
+			if _, exists := merged[field]; !exists {
+				merged[field] = prefix
+			}
+		}
+	}
+	return merged
+}
+
+// generateResponseFieldPrefixes writes the responseFieldPrefixes map variable.
+func (c *Collector) generateResponseFieldPrefixes(b *strings.Builder) {
+	merged := c.mergedResponseFieldPrefixes()
+
+	names := make([]string, 0, len(merged))
+	for name := range merged {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	b.WriteString("\n// responseFieldPrefixes maps a response JSON field name to the alias prefix\n")
+	b.WriteString("// declared for it in the proto. Responses are marshaled with protojson, so\n")
+	b.WriteString("// keys are camelCase JSON names.\n")
+	b.WriteString("//\n")
+	b.WriteString("// An empty prefix means \"use the tool's primary prefix\" (see toolOutputPrefix).\n")
+	b.WriteString("// Fields absent from this map are never aliased.\n")
+	b.WriteString("var responseFieldPrefixes = map[string]string{\n")
+	for _, name := range names {
+		if merged[name] == primaryPrefixSentinel {
+			b.WriteString(fmt.Sprintf("\t%q: %q, // use the tool's primary prefix\n", name, merged[name]))
+			continue
+		}
+		b.WriteString(fmt.Sprintf("\t%q: %q,\n", name, merged[name]))
 	}
 	b.WriteString("}\n")
 }

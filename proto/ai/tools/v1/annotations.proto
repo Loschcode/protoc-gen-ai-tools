@@ -43,7 +43,12 @@ message ToolFieldOptions {
   // (e.g. prefix "link" produces "link-1", "link-2", etc.).
   // Fields with the same prefix share the same alias counter, so
   // link_id on CreateWorkflowStepRequest resolves against the same
-  // map as id on CreateLinkResponse.
+  // map as id on Link.
+  //
+  // Annotate BOTH sides: request fields so aliases resolve back to
+  // UUIDs, and response fields so returned UUIDs are registered under
+  // the right prefix. Registration is field-aware — a UUID in a
+  // response field that carries no alias_prefix is never aliased.
   string alias_prefix = 2;
 }
 

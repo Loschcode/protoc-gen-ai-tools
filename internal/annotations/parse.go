@@ -49,47 +49,71 @@ func FieldDescription(field protoreflect.FieldDescriptor) string {
 	return parseFieldContextDescription(ext)
 }
 
-// toolFieldNumber is the extension field for FieldSkip (ai.tools.v1.tool_field).
+// toolFieldNumber is the extension field for ToolFieldOptions (ai.tools.v1.tool_field).
 const toolFieldNumber protowire.Number = 52105
 
-// IsToolSkipped checks if a field has (ai.tools.v1.tool_field).skip = true.
-// Uses pure wire format parsing to avoid importing generated types (which
-// conflicts with the proto registry when running as a protoc plugin).
-func IsToolSkipped(field protoreflect.FieldDescriptor) bool {
+// ToolFieldOpts holds parsed options from (ai.tools.v1.tool_field).
+type ToolFieldOpts struct {
+	Skip        bool
+	AliasPrefix string // e.g. "link", "step" — empty means no aliasing
+}
+
+// GetToolFieldOpts extracts ToolFieldOptions from a field descriptor.
+func GetToolFieldOpts(field protoreflect.FieldDescriptor) ToolFieldOpts {
 	opts, ok := field.Options().(*descriptorpb.FieldOptions)
 	if !ok || opts == nil {
-		return false
+		return ToolFieldOpts{}
 	}
 	raw := opts.ProtoReflect().GetUnknown()
 	ext := findExtension(raw, toolFieldNumber)
 	if ext == nil {
-		return false
+		return ToolFieldOpts{}
 	}
-	// Parse FieldSkip message: field 1 = skip (varint/bool)
-	for len(ext) > 0 {
-		num, typ, n := protowire.ConsumeTag(ext)
+	return parseToolFieldOpts(ext)
+}
+
+// IsToolSkipped checks if a field has (ai.tools.v1.tool_field).skip = true.
+func IsToolSkipped(field protoreflect.FieldDescriptor) bool {
+	return GetToolFieldOpts(field).Skip
+}
+
+// parseToolFieldOpts parses ToolFieldOptions: field 1 = skip (varint), field 2 = alias_prefix (bytes).
+func parseToolFieldOpts(raw []byte) ToolFieldOpts {
+	var out ToolFieldOpts
+	for len(raw) > 0 {
+		num, typ, n := protowire.ConsumeTag(raw)
 		if n < 0 {
-			return false
+			return out
 		}
-		ext = ext[n:]
-		if typ == protowire.VarintType {
-			v, m := protowire.ConsumeVarint(ext)
+		raw = raw[n:]
+		switch typ {
+		case protowire.VarintType:
+			v, m := protowire.ConsumeVarint(raw)
 			if m < 0 {
-				return false
+				return out
 			}
 			if num == 1 {
-				return v > 0
+				out.Skip = v > 0
 			}
-			ext = ext[m:]
-		} else {
-			skip := consumeField(typ, ext)
+			raw = raw[m:]
+		case protowire.BytesType:
+			b, m := protowire.ConsumeBytes(raw)
+			if m < 0 {
+				return out
+			}
+			if num == 2 {
+				out.AliasPrefix = string(b)
+			}
+			raw = raw[m:]
+		default:
+			skip := consumeField(typ, raw)
 			if skip < 0 {
-				return false
+				return out
 			}
-			ext = ext[skip:]
+			raw = raw[skip:]
 		}
 	}
-	return false
+	return out
 }
 
 // IsOutputOnly checks if a field has OUTPUT_ONLY field_behavior.

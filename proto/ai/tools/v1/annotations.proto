@@ -29,15 +29,24 @@ extend google.protobuf.MethodOptions {
   ToolDefinition rpc_tool = 52104;
 }
 
-// FieldSkip marks a field to be excluded from the AI tool schema.
-// Use for developer-facing fields (e.g. metadata maps with dynamic keys)
-// that are incompatible with strict mode or not useful for end users
-// interacting through the AI assistant. The field remains in the
-// gRPC/REST API — only the generated tool definition omits it.
-message FieldSkip {
+// ToolFieldOptions controls how a field behaves in the AI tool schema.
+message ToolFieldOptions {
+  // When true, this field is excluded from the AI tool schema entirely.
+  // Use for developer-facing fields (e.g. metadata maps with dynamic keys)
+  // that are incompatible with strict mode or not useful for end users.
   bool skip = 1;
+
+  // When set, this field is an ID that should be aliased for the LLM.
+  // The executor replaces raw UUIDs with human-readable aliases
+  // (e.g. "link-1", "step-3") in responses, and resolves aliases back
+  // to UUIDs in requests. The prefix is used for alias generation
+  // (e.g. prefix "link" produces "link-1", "link-2", etc.).
+  // Fields with the same prefix share the same alias counter, so
+  // link_id on CreateWorkflowStepRequest resolves against the same
+  // map as id on CreateLinkResponse.
+  string alias_prefix = 2;
 }
 
 extend google.protobuf.FieldOptions {
-  FieldSkip tool_field = 52105;
+  ToolFieldOptions tool_field = 52105;
 }

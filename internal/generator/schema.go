@@ -64,6 +64,7 @@ func (sg *SchemaGenerator) messageSchema(msg protoreflect.MessageDescriptor) map
 			si := field.ParentFile().SourceLocations().ByDescriptor(field)
 			desc = strings.TrimSpace(si.LeadingComments)
 		}
+
 		if desc != "" {
 			schema["description"] = desc
 		}
@@ -192,8 +193,17 @@ func (sg *SchemaGenerator) wellKnownType(msg protoreflect.MessageDescriptor) map
 	case "google.protobuf.Timestamp":
 		return map[string]any{"type": "string", "format": "date-time"}
 	case "google.protobuf.Empty":
-		return map[string]any{"type": "object"}
+		result := map[string]any{"type": "object"}
+		if sg.strict {
+			result["additionalProperties"] = false
+		}
+		return result
 	case "google.protobuf.Struct":
+		if sg.strict {
+			// Struct has dynamic keys — incompatible with strict mode.
+			// Represent as JSON string.
+			return map[string]any{"type": "string", "description": "JSON-encoded object"}
+		}
 		return map[string]any{"type": "object"}
 	case "google.protobuf.Value":
 		return map[string]any{}

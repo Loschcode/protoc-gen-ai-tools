@@ -56,6 +56,7 @@ func (sg *SchemaGenerator) messageSchema(msg protoreflect.MessageDescriptor) map
 
 		name := string(field.Name())
 		schema := sg.fieldSchema(field)
+		isOptional := field.HasOptionalKeyword() || field.ContainingOneof() != nil
 
 		// Add description from field_context annotation or proto comments.
 		desc := annotations.FieldDescription(field)
@@ -67,17 +68,25 @@ func (sg *SchemaGenerator) messageSchema(msg protoreflect.MessageDescriptor) map
 			schema["description"] = desc
 		}
 
-		properties[name] = schema
+		// In strict mode, optional fields are nullable via anyOf union.
+		if sg.strict && isOptional {
+			properties[name] = map[string]any{
+				"anyOf": []any{schema, map[string]any{"type": "null"}},
+			}
+			// Preserve description on the wrapper
+			if desc != "" {
+				properties[name].(map[string]any)["description"] = desc
+				delete(schema, "description")
+			}
+		} else {
+			properties[name] = schema
+		}
 
 		if sg.strict {
 			// OpenAI strict mode: ALL properties must be in required.
-			// Optional fields are handled by the LLM sending null.
 			required = append(required, name)
-		} else {
-			// Non-strict: only non-optional, non-oneof fields are required.
-			if !field.HasOptionalKeyword() && field.ContainingOneof() == nil {
-				required = append(required, name)
-			}
+		} else if !isOptional {
+			required = append(required, name)
 		}
 	}
 
@@ -98,15 +107,22 @@ func (sg *SchemaGenerator) messageSchema(msg protoreflect.MessageDescriptor) map
 }
 
 func (sg *SchemaGenerator) fieldSchema(field protoreflect.FieldDescriptor) map[string]any {
-	// Map fields: map<K,V> → {"type": "object", "additionalProperties": <V>}
+	// Map fields: map<K,V>
 	if field.IsMap() {
+		if sg.strict {
+			// Strict mode doesn't allow additionalProperties other than false.
+			// Convert map to a JSON string that the LLM sends as stringified JSON.
+			return map[string]any{
+				"type":        "string",
+				"description": "JSON-encoded key-value object",
+			}
+		}
 		valueField := field.MapValue()
 		valueSchema := sg.singularSchema(valueField)
-		result := map[string]any{
+		return map[string]any{
 			"type":                 "object",
 			"additionalProperties": valueSchema,
 		}
-		return result
 	}
 
 	// Repeated fields: repeated X → {"type": "array", "items": <X>}

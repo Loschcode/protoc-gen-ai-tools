@@ -99,32 +99,40 @@ func (x *ToolDefinition) GetAutoExecute() bool {
 	return false
 }
 
-// FieldSkip marks a field to be excluded from the AI tool schema.
-// Use for developer-facing fields (e.g. metadata maps with dynamic keys)
-// that are incompatible with strict mode or not useful for end users
-// interacting through the AI assistant. The field remains in the
-// gRPC/REST API — only the generated tool definition omits it.
-type FieldSkip struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Skip          bool                   `protobuf:"varint,1,opt,name=skip,proto3" json:"skip,omitempty"`
+// ToolFieldOptions controls how a field behaves in the AI tool schema.
+type ToolFieldOptions struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// When true, this field is excluded from the AI tool schema entirely.
+	// Use for developer-facing fields (e.g. metadata maps with dynamic keys)
+	// that are incompatible with strict mode or not useful for end users.
+	Skip bool `protobuf:"varint,1,opt,name=skip,proto3" json:"skip,omitempty"`
+	// When set, this field is an ID that should be aliased for the LLM.
+	// The executor replaces raw UUIDs with human-readable aliases
+	// (e.g. "link-1", "step-3") in responses, and resolves aliases back
+	// to UUIDs in requests. The prefix is used for alias generation
+	// (e.g. prefix "link" produces "link-1", "link-2", etc.).
+	// Fields with the same prefix share the same alias counter, so
+	// link_id on CreateWorkflowStepRequest resolves against the same
+	// map as id on CreateLinkResponse.
+	AliasPrefix   string `protobuf:"bytes,2,opt,name=alias_prefix,json=aliasPrefix,proto3" json:"alias_prefix,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *FieldSkip) Reset() {
-	*x = FieldSkip{}
+func (x *ToolFieldOptions) Reset() {
+	*x = ToolFieldOptions{}
 	mi := &file_proto_ai_tools_v1_annotations_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *FieldSkip) String() string {
+func (x *ToolFieldOptions) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*FieldSkip) ProtoMessage() {}
+func (*ToolFieldOptions) ProtoMessage() {}
 
-func (x *FieldSkip) ProtoReflect() protoreflect.Message {
+func (x *ToolFieldOptions) ProtoReflect() protoreflect.Message {
 	mi := &file_proto_ai_tools_v1_annotations_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -136,16 +144,23 @@ func (x *FieldSkip) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use FieldSkip.ProtoReflect.Descriptor instead.
-func (*FieldSkip) Descriptor() ([]byte, []int) {
+// Deprecated: Use ToolFieldOptions.ProtoReflect.Descriptor instead.
+func (*ToolFieldOptions) Descriptor() ([]byte, []int) {
 	return file_proto_ai_tools_v1_annotations_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *FieldSkip) GetSkip() bool {
+func (x *ToolFieldOptions) GetSkip() bool {
 	if x != nil {
 		return x.Skip
 	}
 	return false
+}
+
+func (x *ToolFieldOptions) GetAliasPrefix() string {
+	if x != nil {
+		return x.AliasPrefix
+	}
+	return ""
 }
 
 var file_proto_ai_tools_v1_annotations_proto_extTypes = []protoimpl.ExtensionInfo{
@@ -159,7 +174,7 @@ var file_proto_ai_tools_v1_annotations_proto_extTypes = []protoimpl.ExtensionInf
 	},
 	{
 		ExtendedType:  (*descriptorpb.FieldOptions)(nil),
-		ExtensionType: (*FieldSkip)(nil),
+		ExtensionType: (*ToolFieldOptions)(nil),
 		Field:         52105,
 		Name:          "ai.tools.v1.tool_field",
 		Tag:           "bytes,52105,opt,name=tool_field",
@@ -175,7 +190,7 @@ var (
 
 // Extension fields to descriptorpb.FieldOptions.
 var (
-	// optional ai.tools.v1.FieldSkip tool_field = 52105;
+	// optional ai.tools.v1.ToolFieldOptions tool_field = 52105;
 	E_ToolField = &file_proto_ai_tools_v1_annotations_proto_extTypes[1]
 )
 
@@ -188,12 +203,13 @@ const file_proto_ai_tools_v1_annotations_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12\x16\n" +
 	"\x06strict\x18\x03 \x01(\bR\x06strict\x12!\n" +
-	"\fauto_execute\x18\x04 \x01(\bR\vautoExecute\"\x1f\n" +
-	"\tFieldSkip\x12\x12\n" +
-	"\x04skip\x18\x01 \x01(\bR\x04skip:X\n" +
-	"\brpc_tool\x12\x1e.google.protobuf.MethodOptions\x18\x88\x97\x03 \x01(\v2\x1b.ai.tools.v1.ToolDefinitionR\arpcTool:V\n" +
+	"\fauto_execute\x18\x04 \x01(\bR\vautoExecute\"I\n" +
+	"\x10ToolFieldOptions\x12\x12\n" +
+	"\x04skip\x18\x01 \x01(\bR\x04skip\x12!\n" +
+	"\falias_prefix\x18\x02 \x01(\tR\valiasPrefix:X\n" +
+	"\brpc_tool\x12\x1e.google.protobuf.MethodOptions\x18\x88\x97\x03 \x01(\v2\x1b.ai.tools.v1.ToolDefinitionR\arpcTool:]\n" +
 	"\n" +
-	"tool_field\x12\x1d.google.protobuf.FieldOptions\x18\x89\x97\x03 \x01(\v2\x16.ai.tools.v1.FieldSkipR\ttoolFieldBBZ@github.com/Loschcode/protoc-gen-ai-tools/ai/tools/v1;ai_tools_v1b\x06proto3"
+	"tool_field\x12\x1d.google.protobuf.FieldOptions\x18\x89\x97\x03 \x01(\v2\x1d.ai.tools.v1.ToolFieldOptionsR\ttoolFieldBBZ@github.com/Loschcode/protoc-gen-ai-tools/ai/tools/v1;ai_tools_v1b\x06proto3"
 
 var (
 	file_proto_ai_tools_v1_annotations_proto_rawDescOnce sync.Once
@@ -210,7 +226,7 @@ func file_proto_ai_tools_v1_annotations_proto_rawDescGZIP() []byte {
 var file_proto_ai_tools_v1_annotations_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
 var file_proto_ai_tools_v1_annotations_proto_goTypes = []any{
 	(*ToolDefinition)(nil),             // 0: ai.tools.v1.ToolDefinition
-	(*FieldSkip)(nil),                  // 1: ai.tools.v1.FieldSkip
+	(*ToolFieldOptions)(nil),           // 1: ai.tools.v1.ToolFieldOptions
 	(*descriptorpb.MethodOptions)(nil), // 2: google.protobuf.MethodOptions
 	(*descriptorpb.FieldOptions)(nil),  // 3: google.protobuf.FieldOptions
 }
@@ -218,7 +234,7 @@ var file_proto_ai_tools_v1_annotations_proto_depIdxs = []int32{
 	2, // 0: ai.tools.v1.rpc_tool:extendee -> google.protobuf.MethodOptions
 	3, // 1: ai.tools.v1.tool_field:extendee -> google.protobuf.FieldOptions
 	0, // 2: ai.tools.v1.rpc_tool:type_name -> ai.tools.v1.ToolDefinition
-	1, // 3: ai.tools.v1.tool_field:type_name -> ai.tools.v1.FieldSkip
+	1, // 3: ai.tools.v1.tool_field:type_name -> ai.tools.v1.ToolFieldOptions
 	4, // [4:4] is the sub-list for method output_type
 	4, // [4:4] is the sub-list for method input_type
 	2, // [2:4] is the sub-list for extension type_name

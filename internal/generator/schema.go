@@ -45,6 +45,16 @@ func (sg *SchemaGenerator) messageSchema(msg protoreflect.MessageDescriptor) map
 	properties := make(map[string]any)
 	var required []string
 
+	// Members of a real oneof are collected rather than emitted inline: a oneof
+	// is a union, and flattening it into sibling properties loses that. See
+	// oneofSchema below for why that matters.
+	type oneofMember struct {
+		name   string
+		schema map[string]any
+	}
+	var oneofMembers []oneofMember
+	realOneofs := make(map[protoreflect.FullName]bool)
+
 	fields := msg.Fields()
 	for i := 0; i < fields.Len(); i++ {
 		field := fields.Get(i)
@@ -62,6 +72,14 @@ func (sg *SchemaGenerator) messageSchema(msg protoreflect.MessageDescriptor) map
 
 		if desc != "" {
 			schema["description"] = desc
+		}
+
+		// proto3 `optional` is implemented as a synthetic one-member oneof, so
+		// only non-synthetic ones are real unions.
+		if od := field.ContainingOneof(); od != nil && !od.IsSynthetic() {
+			realOneofs[od.FullName()] = true
+			oneofMembers = append(oneofMembers, oneofMember{name: name, schema: schema})
+			continue
 		}
 
 		// In strict mode, optional fields are nullable via anyOf union.
@@ -83,6 +101,48 @@ func (sg *SchemaGenerator) messageSchema(msg protoreflect.MessageDescriptor) map
 			required = append(required, name)
 		} else if !isOptional {
 			required = append(required, name)
+		}
+	}
+
+	// A single union is expressible as anyOf over one branch per member. More
+	// than one in the same message would need the cartesian product of their
+	// members, which is a combinatorial blow-up for no real-world gain, so
+	// those keep the flattened form.
+	if len(realOneofs) == 1 && len(oneofMembers) > 0 {
+		branches := make([]any, 0, len(oneofMembers))
+		for _, m := range oneofMembers {
+			props := make(map[string]any, len(properties)+1)
+			for k, v := range properties {
+				props[k] = v
+			}
+			props[m.name] = m.schema
+
+			branch := map[string]any{
+				"type":       "object",
+				"properties": props,
+				"required":   append(append([]string{}, required...), m.name),
+			}
+			if sg.strict {
+				branch["additionalProperties"] = false
+			}
+			branches = append(branches, branch)
+		}
+		return map[string]any{"anyOf": branches}
+	}
+
+	for _, m := range oneofMembers {
+		if sg.strict {
+			wrapper := map[string]any{
+				"anyOf": []any{m.schema, map[string]any{"type": "null"}},
+			}
+			if desc, ok := m.schema["description"]; ok {
+				wrapper["description"] = desc
+				delete(m.schema, "description")
+			}
+			properties[m.name] = wrapper
+			required = append(required, m.name)
+		} else {
+			properties[m.name] = m.schema
 		}
 	}
 

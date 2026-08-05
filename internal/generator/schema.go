@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"sort"
 	"strings"
 
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -30,7 +31,108 @@ func (sg *SchemaGenerator) Generate(msg protoreflect.MessageDescriptor) map[stri
 		return wkt
 	}
 
-	return sg.messageSchema(msg)
+	return objectAtRoot(sg.messageSchema(msg))
+}
+
+// objectAtRoot collapses a union into a single object.
+//
+// A message whose fields include a oneof is generated as an anyOf, which has
+// no type of its own. That is fine inside a property and wrong at the root of a
+// function's parameters: OpenAI requires an object there and rejects the whole
+// tool list otherwise, with
+//
+//	schema must be a JSON Schema of 'type: "object"', got 'type: "None"'
+//
+// One malformed tool fails every request, so a single oneof on a request
+// message took a production assistant down for two days, for every
+// conversation, whatever it asked.
+//
+// The branches of a oneof differ only in which mutually exclusive member they
+// carry, so their union describes the same message. A member required by only
+// some branches cannot be required overall, which leaves exactly the fields
+// every branch shares. Which members exclude each other belongs in the tool's
+// description, where the model reads it, not in a schema shape the provider
+// will not accept.
+func objectAtRoot(schema map[string]any) map[string]any {
+	if _, hasType := schema["type"]; hasType {
+		return schema
+	}
+	branches, ok := schema["anyOf"].([]any)
+	if !ok || len(branches) == 0 {
+		return schema
+	}
+
+	properties := map[string]any{}
+	requiredCount := map[string]int{}
+
+	for _, raw := range branches {
+		branch, ok := raw.(map[string]any)
+		if !ok {
+			return schema
+		}
+		if props, ok := branch["properties"].(map[string]any); ok {
+			for name, definition := range props {
+				properties[name] = definition
+			}
+		}
+		if required, ok := branch["required"].([]string); ok {
+			for _, name := range required {
+				requiredCount[name]++
+			}
+		}
+		if required, ok := branch["required"].([]any); ok {
+			for _, name := range required {
+				if field, ok := name.(string); ok {
+					requiredCount[field]++
+				}
+			}
+		}
+	}
+
+	required := make([]string, 0, len(requiredCount))
+	for name, count := range requiredCount {
+		if count == len(branches) {
+			required = append(required, name)
+		}
+	}
+	sort.Strings(required)
+
+	flattened := map[string]any{
+		"type":       "object",
+		"properties": properties,
+		"required":   required,
+	}
+	if description, ok := schema["description"]; ok {
+		flattened["description"] = description
+	}
+	for _, branch := range branches {
+		if asMap, ok := branch.(map[string]any); ok {
+			if additional, ok := asMap["additionalProperties"]; ok {
+				flattened["additionalProperties"] = additional
+				break
+			}
+		}
+	}
+	return flattened
+}
+
+// nullable makes a schema accept null, without nesting one union inside
+// another.
+//
+// A nullable message that is itself a union would otherwise produce
+// anyOf[ anyOf[caseA, caseB], null ]. The inner wrapper carries no type and
+// OpenAI rejects the tool over it, reporting a required-key problem on a branch
+// that has none, which is a hard error to read back to its cause.
+// anyOf[anyOf[A,B],C] means anyOf[A,B,C], so the branches are spliced instead.
+func nullable(schema map[string]any) map[string]any {
+	null := map[string]any{"type": "null"}
+
+	if branches, ok := schema["anyOf"].([]any); ok {
+		if _, hasType := schema["type"]; !hasType {
+			return map[string]any{"anyOf": append(append([]any{}, branches...), null)}
+		}
+	}
+	return map[string]any{"anyOf": []any{schema, null}}
 }
 
 func (sg *SchemaGenerator) messageSchema(msg protoreflect.MessageDescriptor) map[string]any {
@@ -84,9 +186,7 @@ func (sg *SchemaGenerator) messageSchema(msg protoreflect.MessageDescriptor) map
 
 		// In strict mode, optional fields are nullable via anyOf union.
 		if sg.strict && isOptional {
-			properties[name] = map[string]any{
-				"anyOf": []any{schema, map[string]any{"type": "null"}},
-			}
+			properties[name] = nullable(schema)
 			// Preserve description on the wrapper
 			if desc != "" {
 				properties[name].(map[string]any)["description"] = desc
@@ -132,9 +232,7 @@ func (sg *SchemaGenerator) messageSchema(msg protoreflect.MessageDescriptor) map
 
 	for _, m := range oneofMembers {
 		if sg.strict {
-			wrapper := map[string]any{
-				"anyOf": []any{m.schema, map[string]any{"type": "null"}},
-			}
+			wrapper := nullable(m.schema)
 			if desc, ok := m.schema["description"]; ok {
 				wrapper["description"] = desc
 				delete(m.schema, "description")

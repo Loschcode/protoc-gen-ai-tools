@@ -249,8 +249,13 @@ func (sg *SchemaGenerator) messageSchema(msg protoreflect.MessageDescriptor) map
 		"properties": properties,
 	}
 
+	// Strict mode wants required on every object, empty included. Omitting it
+	// when there is nothing to require reads as "not supplied" rather than
+	// "nothing required", and the tool is rejected.
 	if len(required) > 0 {
 		result["required"] = required
+	} else if sg.strict {
+		result["required"] = []string{}
 	}
 
 	if sg.strict {
@@ -346,9 +351,23 @@ func (sg *SchemaGenerator) wellKnownType(msg protoreflect.MessageDescriptor) map
 	case "google.protobuf.Timestamp":
 		return map[string]any{"type": "string", "format": "date-time"}
 	case "google.protobuf.Empty":
-		result := map[string]any{"type": "object"}
+		// An empty message still has to say it is empty. Strict mode requires
+		// every object to declare properties and required, and rejects the
+		// whole tool over one that does not:
+		//
+		//	'required' is required to be supplied and to be an array including
+		//	every key in properties
+		//
+		// google.protobuf.Empty is the natural way to write a valueless case in
+		// a oneof — MediaSelection uses it for "delete this badge" — so leaving
+		// the keys off broke every tool carrying one.
+		result := map[string]any{
+			"type":       "object",
+			"properties": map[string]any{},
+		}
 		if sg.strict {
 			result["additionalProperties"] = false
+			result["required"] = []string{}
 		}
 		return result
 	case "google.protobuf.Struct":

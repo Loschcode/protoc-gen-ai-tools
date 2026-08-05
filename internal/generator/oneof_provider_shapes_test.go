@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"fmt"
 	"testing"
 
 	"google.golang.org/protobuf/compiler/protogen"
@@ -163,6 +164,129 @@ func requestSchemaWithRootOneof(t *testing.T) map[string]any {
 	var request *protogen.Message
 	for _, m := range file.Messages {
 		if m.Desc.Name() == "UpdateDesignRequest" {
+			request = m
+		}
+	}
+	if request == nil {
+		t.Fatal("request message not found")
+	}
+
+	return NewSchemaGenerator(true).Generate(request.Desc)
+}
+
+// In strict mode every object declares properties and required, empty ones
+// included.
+//
+// google.protobuf.Empty is how a valueless case in a oneof is written —
+// MediaSelection uses it for "delete this badge" — and it was generated as
+// {"type":"object"} with neither key. Strict mode reads a missing required as
+// "not supplied" rather than "nothing required" and rejects the whole tool:
+//
+//	'required' is required to be supplied and to be an array including every
+//	key in properties. Extra required key 'delete' supplied.
+//
+// The message names the parent branch, which is valid, so it takes a while to
+// find the object it is actually complaining about. Asserting the invariant
+// over every object says it plainly.
+func TestGenerate_EveryStrictObjectDeclaresPropertiesAndRequired(t *testing.T) {
+	schema := requestSchemaWithEmptyOneofCase(t)
+
+	for _, problem := range objectsMissingStrictKeys(schema, "") {
+		t.Error(problem)
+	}
+}
+
+func objectsMissingStrictKeys(node any, path string) []string {
+	var problems []string
+
+	switch typed := node.(type) {
+	case map[string]any:
+		if kind, _ := typed["type"].(string); kind == "object" {
+			where := path
+			if where == "" {
+				where = "root"
+			}
+			if _, ok := typed["properties"]; !ok {
+				problems = append(problems, where+": object without properties")
+			}
+			if _, ok := typed["required"]; !ok {
+				problems = append(problems, where+": object without required")
+			}
+		}
+		for name, child := range typed {
+			problems = append(problems, objectsMissingStrictKeys(child, path+"."+name)...)
+		}
+	case []any:
+		for i, child := range typed {
+			problems = append(problems, objectsMissingStrictKeys(child, fmt.Sprintf("%s[%d]", path, i))...)
+		}
+	}
+
+	return problems
+}
+
+// requestSchemaWithEmptyOneofCase mirrors MediaSelection: a oneof whose second
+// case is google.protobuf.Empty, nested under a field of the request.
+func requestSchemaWithEmptyOneofCase(t *testing.T) map[string]any {
+	t.Helper()
+
+	fd := &descriptorpb.FileDescriptorProto{
+		Name:       proto.String("test/v1/emptycase.proto"),
+		Package:    proto.String("test.v1"),
+		Syntax:     proto.String("proto3"),
+		Dependency: []string{"google/protobuf/empty.proto"},
+		Options:    &descriptorpb.FileOptions{GoPackage: proto.String("example.com/gen/testv1;testv1")},
+		MessageType: []*descriptorpb.DescriptorProto{
+			{
+				Name:      proto.String("MediaSelection"),
+				OneofDecl: []*descriptorpb.OneofDescriptorProto{{Name: proto.String("value")}},
+				Field: []*descriptorpb.FieldDescriptorProto{
+					func() *descriptorpb.FieldDescriptorProto {
+						f := strField("id", 1, nil)
+						f.OneofIndex = proto.Int32(0)
+						return f
+					}(),
+					oneofMsgField("delete", 2, ".google.protobuf.Empty", 0),
+				},
+			},
+			{
+				Name:  proto.String("UpdateThemeRequest"),
+				Field: []*descriptorpb.FieldDescriptorProto{msgField("badge", 1, ".test.v1.MediaSelection", false)},
+			},
+			{Name: proto.String("UpdateThemeResponse"), Field: []*descriptorpb.FieldDescriptorProto{strField("id", 1, nil)}},
+		},
+		Service: []*descriptorpb.ServiceDescriptorProto{{
+			Name: proto.String("ThemeService"),
+			Method: []*descriptorpb.MethodDescriptorProto{{
+				Name:       proto.String("UpdateTheme"),
+				InputType:  proto.String(".test.v1.UpdateThemeRequest"),
+				OutputType: proto.String(".test.v1.UpdateThemeResponse"),
+				Options:    rpcToolOptions("page_themes_update", "Update a theme", true),
+			}},
+		}},
+	}
+
+	emptyFd := &descriptorpb.FileDescriptorProto{
+		Name:        proto.String("google/protobuf/empty.proto"),
+		Package:     proto.String("google.protobuf"),
+		Syntax:      proto.String("proto3"),
+		Options:     &descriptorpb.FileOptions{GoPackage: proto.String("google.golang.org/protobuf/types/known/emptypb")},
+		MessageType: []*descriptorpb.DescriptorProto{{Name: proto.String("Empty")}},
+	}
+
+	req := &pluginpb.CodeGeneratorRequest{
+		FileToGenerate: []string{fd.GetName()},
+		ProtoFile:      []*descriptorpb.FileDescriptorProto{emptyFd, fd},
+	}
+	plugin, err := protogen.Options{}.New(req)
+	if err != nil {
+		t.Fatalf("protogen.New: %v", err)
+	}
+
+	file := plugin.Files[len(plugin.Files)-1]
+	var request *protogen.Message
+	for _, m := range file.Messages {
+		if m.Desc.Name() == "UpdateThemeRequest" {
 			request = m
 		}
 	}

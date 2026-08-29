@@ -168,7 +168,24 @@ func (sg *SchemaGenerator) messageSchema(msg protoreflect.MessageDescriptor) map
 
 		name := string(field.Name())
 		schema := sg.fieldSchema(field)
-		isOptional := field.HasOptionalKeyword() || field.ContainingOneof() != nil
+
+		// Every field with explicit presence can be genuinely absent, and the
+		// schema has to give the model a way to say so. proto3 `optional` and
+		// oneof members are the obvious cases; singular message fields are the
+		// one that was missed, and they include every well-known type — a
+		// Timestamp, a StringValue, a nested payload.
+		//
+		// Strict mode puts every property in `required`, so a non-nullable
+		// google.protobuf.Timestamp leaves the model no legal way to express
+		// "no expiry": it has to emit some date-time string. links_create asks
+		// for expires_at, whose own usage notes say never to invent one, and
+		// the model dutifully invented one on every link it created — an
+		// expiry that later deletes the link along with its analytics. The
+		// instruction was not being ignored; it was impossible to obey.
+		//
+		// Repeated and map fields have no presence: an empty list is absence,
+		// and HasPresence is false for them, so they stay as they were.
+		isOptional := field.HasPresence()
 
 		desc := sg.fieldDescription(field)
 

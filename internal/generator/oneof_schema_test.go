@@ -119,15 +119,24 @@ func stepPayloadSchema(t *testing.T) map[string]any {
 func TestOneofBecomesAnyOfOfBranches(t *testing.T) {
 	payload := stepPayloadSchema(t)
 
-	branches, ok := payload["anyOf"].([]any)
+	all, ok := payload["anyOf"].([]any)
 	if !ok {
 		t.Fatalf("oneof did not produce anyOf, got: %#v", payload)
 	}
-	if len(branches) != 2 {
-		t.Fatalf("expected one branch per oneof member, got %d", len(branches))
-	}
 	if _, flattened := payload["properties"]; flattened {
 		t.Error("oneof still emitted flattened sibling properties")
+	}
+
+	// payload is a singular message field, so it has presence and the union
+	// carries a null branch for "not set" alongside one branch per member.
+	// That branch is spliced in rather than nested, so the members are still
+	// reachable at the top level; the assertions below are about them.
+	branches, nulls := splitNullBranch(all)
+	if nulls != 1 {
+		t.Fatalf("expected exactly one null branch for an absent payload, got %d in %#v", nulls, all)
+	}
+	if len(branches) != 2 {
+		t.Fatalf("expected one branch per oneof member, got %d", len(branches))
 	}
 
 	seen := make(map[string]bool)
@@ -195,4 +204,17 @@ func TestSyntheticOneofStaysANullableProperty(t *testing.T) {
 	if !hasNote {
 		t.Error("strict mode requires every property to be listed in required")
 	}
+}
+
+// splitNullBranch separates the {"type":"null"} branch a nullable union carries
+// from the branches that describe real values.
+func splitNullBranch(all []any) (branches []any, nulls int) {
+	for _, b := range all {
+		if m, ok := b.(map[string]any); ok && m["type"] == "null" && len(m) == 1 {
+			nulls++
+			continue
+		}
+		branches = append(branches, b)
+	}
+	return branches, nulls
 }

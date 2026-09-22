@@ -325,7 +325,25 @@ func TestGeneratedAliasRuntime(t *testing.T) {
 
 const generatedRuntimeTestSource = `package gentools
 
-import "testing"
+import (
+	"encoding/json"
+	"fmt"
+	"testing"
+)
+
+var stepUUIDs = [11]string{
+	"a0000000-0000-4000-8000-000000000001",
+	"a0000000-0000-4000-8000-000000000002",
+	"a0000000-0000-4000-8000-000000000003",
+	"a0000000-0000-4000-8000-000000000004",
+	"a0000000-0000-4000-8000-000000000005",
+	"a0000000-0000-4000-8000-000000000006",
+	"a0000000-0000-4000-8000-000000000007",
+	"a0000000-0000-4000-8000-000000000008",
+	"a0000000-0000-4000-8000-000000000009",
+	"a0000000-0000-4000-8000-000000000010",
+	"a0000000-0000-4000-8000-000000000011",
+}
 
 const (
 	linkUUID      = "11111111-1111-4111-8111-111111111111"
@@ -378,6 +396,87 @@ func TestRegisterFieldsFromJSONIgnoresUnknownFields(t *testing.T) {
 	am.RegisterFieldsFromJSON("link", ` + "`" + `{"somethingElse":"` + "` + workspaceUUID + `" + `"}` + "`" + `)
 	if got := am.ResolveAlias("link-1"); got != "link-1" {
 		t.Errorf("unknown field was aliased: link-1 -> %q", got)
+	}
+}
+
+// The alias counter is unbounded, so step-1 and step-11 coexist. Substring
+// rewriting turned step-11 into the uuid of step-1 followed by a stray "1",
+// and Go randomises map order so it failed intermittently.
+func TestResolveJSONDoesNotCorruptAnAliasThatIsAPrefixOfAnother(t *testing.T) {
+	am := NewAliasManager()
+	for i := 0; i < 11; i++ {
+		am.Register("step", stepUUIDs[i])
+	}
+	if got := am.ResolveAlias("step-11"); got != stepUUIDs[10] {
+		t.Fatalf("fixture wrong: step-11 = %q", got)
+	}
+
+	out := am.ResolveJSON("workflow_steps_update", ` + "`" + `{"id":"step-11","nextStepId":"step-1"}` + "`" + `)
+
+	var got map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("ResolveJSON produced invalid JSON %q: %v", out, err)
+	}
+	if got["id"] != stepUUIDs[10] {
+		t.Errorf("id = %v, want the step-11 uuid %q", got["id"], stepUUIDs[10])
+	}
+	if got["nextStepId"] != stepUUIDs[0] {
+		t.Errorf("nextStepId = %v, want the step-1 uuid %q", got["nextStepId"], stepUUIDs[0])
+	}
+}
+
+// An alias is only a value, never a fragment of one: a slug that happens to
+// contain "link-1" is user data and must survive untouched.
+func TestResolveJSONLeavesUserTextAlone(t *testing.T) {
+	am := NewAliasManager()
+	am.Register("link", linkUUID)
+
+	out := am.ResolveJSON("links_update", ` + "`" + `{"id":"link-1","name":"my-link-1","shortlink":"go/link-1-promo"}` + "`" + `)
+
+	var got map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("ResolveJSON produced invalid JSON %q: %v", out, err)
+	}
+	if got["id"] != linkUUID {
+		t.Errorf("id = %v, want the link uuid", got["id"])
+	}
+	if got["name"] != "my-link-1" {
+		t.Errorf("name = %v, want it untouched", got["name"])
+	}
+	if got["shortlink"] != "go/link-1-promo" {
+		t.Errorf("shortlink = %v, want it untouched", got["shortlink"])
+	}
+}
+
+// Aliasing runs the same rule in reverse, and must reach ids nested in arrays.
+func TestAliasifyJSONReplacesWholeValuesOnly(t *testing.T) {
+	am := NewAliasManager()
+	am.Register("link", linkUUID)
+
+	out := am.AliasifyJSON("links_list", ` + "`" + `{"links":[{"id":"` + "` + linkUUID + `" + `"}],"note":"see ` + "` + linkUUID + `" + ` for details","count":7}` + "`" + `)
+
+	var got map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("AliasifyJSON produced invalid JSON %q: %v", out, err)
+	}
+	links := got["links"].([]any)
+	if id := links[0].(map[string]any)["id"]; id != "link-1" {
+		t.Errorf("nested id = %v, want link-1", id)
+	}
+	if !contains(got["note"].(string), linkUUID) {
+		t.Errorf("a uuid inside prose must stay raw, got %v", got["note"])
+	}
+	if fmt.Sprint(got["count"]) != "7" {
+		t.Errorf("count = %v, want 7 unchanged", got["count"])
+	}
+}
+
+// Anything that is not a single JSON value is handed back as-is.
+func TestRewriteLeavesNonJSONAlone(t *testing.T) {
+	am := NewAliasManager()
+	am.Register("link", linkUUID)
+	if got := am.ResolveJSON("x", "not json at all"); got != "not json at all" {
+		t.Errorf("non-JSON payload was rewritten to %q", got)
 	}
 }
 

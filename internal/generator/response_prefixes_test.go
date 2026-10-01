@@ -118,6 +118,13 @@ func testFile(t *testing.T, autoExecute bool) *protogen.File {
 				Field: []*descriptorpb.FieldDescriptorProto{
 					strField("id", 1, toolFieldOptions("step", false)),
 					strField("link_id", 2, toolFieldOptions("link", false)),
+					{
+						Name:    proto.String("child_step_ids"),
+						Number:  proto.Int32(3),
+						Label:   labelRepeated.Enum(),
+						Type:    fieldTypeStr.Enum(),
+						Options: toolFieldOptions("step", false),
+					},
 				},
 			},
 			{
@@ -128,8 +135,11 @@ func testFile(t *testing.T, autoExecute bool) *protogen.File {
 				},
 			},
 			{
-				Name:  proto.String("CreateLinkResponse"),
-				Field: []*descriptorpb.FieldDescriptorProto{msgField("link", 1, ".test.v1.Link", false)},
+				Name: proto.String("CreateLinkResponse"),
+				Field: []*descriptorpb.FieldDescriptorProto{
+					msgField("link", 1, ".test.v1.Link", false),
+					msgField("workflow_steps", 2, ".test.v1.WorkflowStep", true),
+				},
 			},
 			{
 				Name: proto.String("ListWorkflowStepsRequest"),
@@ -195,8 +205,10 @@ func TestResponseFieldPrefixesUseJSONNames(t *testing.T) {
 		t.Fatal("links_create not collected")
 	}
 	want := map[string]string{
-		"id":          "", // ambiguous — defers to the tool's primary prefix
-		"pageThemeId": "theme",
+		"id":           "", // ambiguous — defers to the tool's primary prefix
+		"pageThemeId":  "theme",
+		"childStepIds": "step",
+		"linkId":       "link",
 	}
 	if len(create.ResponseFieldPrefixes) != len(want) {
 		t.Fatalf("links_create response prefixes = %v, want %v", create.ResponseFieldPrefixes, want)
@@ -250,11 +262,9 @@ func TestGeneratedCodeIsFieldAware(t *testing.T) {
 
 	mustContain := []string{
 		"var responseFieldPrefixes = map[string]string{",
-		`"id":          "", // use the tool's primary prefix`,
-		`"linkId":      "link",`,
-		`"pageThemeId": "theme",`,
 		"func (am *AliasManager) RegisterFieldsFromJSON(primaryPrefix string, jsonStr string) {",
-		"func (am *AliasManager) registerValue(primaryPrefix string, fieldName string, value any) {",
+		"func (am *AliasManager) registerValue(idPrefix string, fieldName string, value any) {",
+		"var responseIDPrefixes = map[string]string{",
 		// RegisterNewUUIDs stays exported for external callers...
 		"func (am *AliasManager) RegisterNewUUIDs(prefix string, jsonStr string) {",
 		`"links_create":        "link",`,
@@ -263,6 +273,18 @@ func TestGeneratedCodeIsFieldAware(t *testing.T) {
 	}
 	for _, s := range mustContain {
 		if !strings.Contains(out, s) {
+			t.Errorf("generated code missing %q", s)
+		}
+	}
+	// Map entries are compared without gofmt's alignment padding.
+	compact := strings.Join(strings.Fields(out), " ")
+	for _, s := range []string{
+		`"id": "", // use the tool's primary prefix`,
+		`"linkId": "link",`,
+		`"pageThemeId": "theme",`,
+		`"workflowSteps": "step",`,
+	} {
+		if !strings.Contains(compact, s) {
 			t.Errorf("generated code missing %q", s)
 		}
 	}
@@ -388,6 +410,29 @@ func TestRegisterFieldsFromJSONList(t *testing.T) {
 	}
 	if got := am.ResolveAlias("link-1"); got != linkUUID {
 		t.Errorf("link-1 = %q, want the link id", got)
+	}
+}
+
+// links_create returns the link and the steps it seeded. Each step's own id is
+// a step, not a link, and is numbered before the steps it points at: the entry
+// step is step-1 and the redirect it leads to step-2. Before, the entry was
+// "link-2" and the redirect "step-1", which no instruction could predict.
+func TestRegisterFieldsFromJSONSeededSteps(t *testing.T) {
+	am := NewAliasManager()
+	entry, redirect := stepUUIDs[0], stepUUIDs[1]
+	resp := ` + "`" + `{"link":{"id":"` + "` + linkUUID + `" + `"},"workflowSteps":[` + "` +" + `
+		` + "`" + `{"id":"` + "` + entry + `" + `","childStepIds":["` + "` + redirect + `" + `"],"linkId":"` + "` + linkUUID + `" + `"},` + "` +" + `
+		` + "`" + `{"id":"` + "` + redirect + `" + `","linkId":"` + "` + linkUUID + `" + `"}]}` + "`" + `
+
+	am.RegisterFieldsFromJSON("link", resp)
+
+	for alias, want := range map[string]string{"link-1": linkUUID, "step-1": entry, "step-2": redirect} {
+		if got := am.ResolveAlias(alias); got != want {
+			t.Errorf("%s = %q, want %q", alias, got, want)
+		}
+	}
+	if got := am.ResolveAlias("link-2"); got != "link-2" {
+		t.Errorf("a step was aliased as a link: link-2 -> %q", got)
 	}
 }
 

@@ -41,6 +41,10 @@ type ToolInfo struct {
 	// response message to the alias prefix declared on that field.
 	// A key of "id" always maps to "" meaning "use the tool's primary prefix".
 	ResponseFieldPrefixes map[string]string
+	// ResponseIDPrefixes maps the JSON name of a message field to the alias
+	// prefix of that message's own "id", so an "id" is aliased after the entity
+	// it belongs to rather than after the tool that returned it.
+	ResponseIDPrefixes map[string]string
 }
 
 // Collector gathers annotated RPCs across proto files.
@@ -99,6 +103,7 @@ func (c *Collector) CollectFile(file *protogen.File) {
 			// CreateLinkResponse.link.id -> "link"), and only falls back to the
 			// request-derived prefix when the response declares none.
 			responsePrefixes := collectResponseFieldPrefixes(method.Output.Desc)
+			responseIDPrefixes := collectResponseIDPrefixes(method.Output.Desc)
 			if p := responsePrimaryPrefix(method.Output.Desc); p != "" {
 				outputPrefix = p
 			}
@@ -119,6 +124,7 @@ func (c *Collector) CollectFile(file *protogen.File) {
 				OutputPrefix:   outputPrefix,
 
 				ResponseFieldPrefixes: responsePrefixes,
+				ResponseIDPrefixes:    responseIDPrefixes,
 			})
 		}
 	}
@@ -180,6 +186,59 @@ func walkResponseFields(msg protoreflect.MessageDescriptor, visited map[protoref
 		if f.Kind() == protoreflect.MessageKind || f.Kind() == protoreflect.GroupKind {
 			walkResponseFields(f.Message(), visited, out)
 		}
+	}
+}
+
+// collectResponseIDPrefixes maps the JSON name of every message field in a
+// response (recursively) to the alias prefix declared on that message's own
+// "id" field.
+//
+// A bare "id" otherwise took the tool's primary prefix wherever it sat, so the
+// steps CreateLinkResponse returns alongside the link were aliased "link-2",
+// "link-3" while every tool that takes a step expects "step-N".
+func collectResponseIDPrefixes(msg protoreflect.MessageDescriptor) map[string]string {
+	out := make(map[string]string)
+	visited := make(map[protoreflect.FullName]bool)
+	walkResponseIDPrefixes(msg, visited, out)
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func walkResponseIDPrefixes(msg protoreflect.MessageDescriptor, visited map[protoreflect.FullName]bool, out map[string]string) {
+	if msg == nil {
+		return
+	}
+	name := msg.FullName()
+	if visited[name] || strings.HasPrefix(string(name), "google.protobuf.") {
+		return
+	}
+	visited[name] = true
+
+	fields := msg.Fields()
+	for i := 0; i < fields.Len(); i++ {
+		f := fields.Get(i)
+		var nested protoreflect.MessageDescriptor
+		switch {
+		case f.IsMap():
+			if v := f.MapValue(); v.Kind() == protoreflect.MessageKind || v.Kind() == protoreflect.GroupKind {
+				nested = v.Message()
+			}
+		case f.Kind() == protoreflect.MessageKind || f.Kind() == protoreflect.GroupKind:
+			nested = f.Message()
+		}
+		if nested == nil {
+			continue
+		}
+		if idField := nested.Fields().ByJSONName("id"); idField != nil {
+			if prefix := annotations.GetToolFieldOpts(idField).AliasPrefix; prefix != "" {
+				if _, exists := out[f.JSONName()]; !exists {
+					out[f.JSONName()] = prefix
+				}
+			}
+		}
+		walkResponseIDPrefixes(nested, visited, out)
 	}
 }
 
@@ -576,6 +635,7 @@ func (c *Collector) generateAliasManager(b *strings.Builder) {
 	b.WriteString("}\n")
 
 	c.generateResponseFieldPrefixes(b)
+	c.generateResponseIDPrefixes(b)
 
 	b.WriteString("\n// RegisterFieldsFromJSON walks a JSON response and registers UUIDs using the\n")
 	b.WriteString("// prefix declared for the field that holds them. Fields missing from\n")
@@ -592,23 +652,35 @@ func (c *Collector) generateAliasManager(b *strings.Builder) {
 	b.WriteString("}\n")
 
 	b.WriteString("\n// registerValue recurses through a decoded JSON value, carrying down the name\n")
-	b.WriteString("// of the field the value was found under.\n")
-	b.WriteString("func (am *AliasManager) registerValue(primaryPrefix string, fieldName string, value any) {\n")
+	b.WriteString("// of the field the value was found under. idPrefix is the prefix a bare \"id\"\n")
+	b.WriteString("// takes here: the prefix of the entity the enclosing object is, when\n")
+	b.WriteString("// responseIDPrefixes knows the field it sits under, the tool's otherwise.\n")
+	b.WriteString("func (am *AliasManager) registerValue(idPrefix string, fieldName string, value any) {\n")
 	b.WriteString("\tswitch v := value.(type) {\n")
 	b.WriteString("\tcase map[string]any:\n")
+	b.WriteString("\t\tif p, ok := responseIDPrefixes[fieldName]; ok {\n")
+	b.WriteString("\t\t\tidPrefix = p\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t\t// An entity's own id is numbered before the ids it refers to, so the\n")
+	b.WriteString("\t\t// first step listed is step-1 rather than whichever step it points at.\n")
+	b.WriteString("\t\tif id, ok := v[\"id\"]; ok {\n")
+	b.WriteString("\t\t\tam.registerValue(idPrefix, \"id\", id)\n")
+	b.WriteString("\t\t}\n")
 	b.WriteString("\t\t// Sort keys so alias numbering is deterministic.\n")
 	b.WriteString("\t\tkeys := make([]string, 0, len(v))\n")
 	b.WriteString("\t\tfor k := range v {\n")
-	b.WriteString("\t\t\tkeys = append(keys, k)\n")
+	b.WriteString("\t\t\tif k != \"id\" {\n")
+	b.WriteString("\t\t\t\tkeys = append(keys, k)\n")
+	b.WriteString("\t\t\t}\n")
 	b.WriteString("\t\t}\n")
 	b.WriteString("\t\tsort.Strings(keys)\n")
 	b.WriteString("\t\tfor _, k := range keys {\n")
-	b.WriteString("\t\t\tam.registerValue(primaryPrefix, k, v[k])\n")
+	b.WriteString("\t\t\tam.registerValue(idPrefix, k, v[k])\n")
 	b.WriteString("\t\t}\n")
 	b.WriteString("\tcase []any:\n")
 	b.WriteString("\t\t// Repeated values keep the field name of the list itself.\n")
 	b.WriteString("\t\tfor _, item := range v {\n")
-	b.WriteString("\t\t\tam.registerValue(primaryPrefix, fieldName, item)\n")
+	b.WriteString("\t\t\tam.registerValue(idPrefix, fieldName, item)\n")
 	b.WriteString("\t\t}\n")
 	b.WriteString("\tcase string:\n")
 	b.WriteString("\t\tif fieldName == \"\" || uuidPattern.FindString(v) != v {\n")
@@ -619,7 +691,7 @@ func (c *Collector) generateAliasManager(b *strings.Builder) {
 	b.WriteString("\t\t\treturn\n")
 	b.WriteString("\t\t}\n")
 	b.WriteString("\t\tif prefix == \"\" {\n")
-	b.WriteString("\t\t\tprefix = primaryPrefix\n")
+	b.WriteString("\t\t\tprefix = idPrefix\n")
 	b.WriteString("\t\t}\n")
 	b.WriteString("\t\tif prefix == \"\" {\n")
 	b.WriteString("\t\t\treturn\n")
@@ -662,6 +734,33 @@ func (c *Collector) mergedResponseFieldPrefixes() map[string]string {
 		}
 	}
 	return merged
+}
+
+// generateResponseIDPrefixes writes the responseIDPrefixes map variable,
+// merged across tools like responseFieldPrefixes (first entry wins).
+func (c *Collector) generateResponseIDPrefixes(b *strings.Builder) {
+	merged := make(map[string]string)
+	for _, t := range c.tools {
+		for field, prefix := range t.ResponseIDPrefixes {
+			if _, exists := merged[field]; !exists {
+				merged[field] = prefix
+			}
+		}
+	}
+	names := make([]string, 0, len(merged))
+	for name := range merged {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	b.WriteString("\n// responseIDPrefixes maps the JSON name of a field holding an entity to the\n")
+	b.WriteString("// alias prefix of that entity's own \"id\". An \"id\" found under one of these\n")
+	b.WriteString("// fields is aliased after its entity, not after the tool that returned it.\n")
+	b.WriteString("var responseIDPrefixes = map[string]string{\n")
+	for _, name := range names {
+		b.WriteString(fmt.Sprintf("\t%q: %q,\n", name, merged[name]))
+	}
+	b.WriteString("}\n")
 }
 
 // generateResponseFieldPrefixes writes the responseFieldPrefixes map variable.

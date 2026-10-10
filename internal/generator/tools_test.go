@@ -1,6 +1,9 @@
 package generator
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestSnakeToPascal(t *testing.T) {
 	cases := []struct {
@@ -25,5 +28,24 @@ func TestSnakeToPascal(t *testing.T) {
 				t.Errorf("snakeToPascal(%q) = %q, want %q", tc.input, got, tc.expected)
 			}
 		})
+	}
+}
+
+func TestExecutorsEncodeThroughTheMarshalerHook(t *testing.T) {
+	c := NewCollector()
+	c.CollectFile(testFile(t, true))
+	out := c.Generate()
+
+	for _, s := range []string{
+		"type ProtoMarshaler func(proto.Message) ([]byte, error)",
+		"func SetProtoMarshaler(fn ProtoMarshaler) {",
+		"out, err := protoMarshaler(resp)",
+	} {
+		if !strings.Contains(out, s) {
+			t.Errorf("generated code is missing %q", s)
+		}
+	}
+	if got := strings.Count(out, "protojson.MarshalOptions"); got != 1 {
+		t.Errorf("protojson.MarshalOptions appears %d times, want only the default marshaler", got)
 	}
 }

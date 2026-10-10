@@ -439,6 +439,16 @@ uuid := aliasManager.ResolveAlias("link-1")  // returns "d290f1ee-..."
 
 Note that `ResolveAlias` returns an unrecognised input unchanged. A model that invents an alias (`step-0` is a common one, inferred from seeing `step-1` and `step-2`) will therefore send that literal string on to the API, which typically surfaces as an opaque "invalid UUID" error rather than anything the model can act on. If that matters to you, validate before dispatch and return a message naming the ids that are actually valid.
 
+### Encoding tool responses
+
+Executors encode each gRPC response with `protojson` by default, which writes 64-bit integers as strings (`"totalCount": "42"`). If your other transports encode differently, hand the generated package your own marshaler once at startup so tool results match them:
+
+```go
+gentools.SetProtoMarshaler(myjson.Marshal) // func(proto.Message) ([]byte, error)
+```
+
+It applies to every executor in the package and panics on nil.
+
 ## Companion plugin
 
 This plugin pairs with [protoc-gen-ai-context](https://github.com/Loschcode/protoc-gen-ai-context), which generates **knowledge markdown** from proto annotations. Together they make proto files the single source of truth for AI agent behavior:

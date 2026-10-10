@@ -340,6 +340,7 @@ func (c *Collector) Generate() string {
 		b.WriteString("\n")
 		b.WriteString("\t\"google.golang.org/grpc\"\n")
 		b.WriteString("\t\"google.golang.org/protobuf/encoding/protojson\"\n")
+		b.WriteString("\t\"google.golang.org/protobuf/proto\"\n")
 		b.WriteString("\n")
 
 		// Deduplicate and sort import paths for deterministic output.
@@ -406,6 +407,20 @@ func (c *Collector) Generate() string {
 			c.generateToolAliasPrefixes(&b, autoTools)
 		}
 
+		b.WriteString("\n// ProtoMarshaler encodes a gRPC response into the JSON a tool returns.\n")
+		b.WriteString("type ProtoMarshaler func(proto.Message) ([]byte, error)\n")
+		b.WriteString("\nvar protoMarshaler ProtoMarshaler = protojson.MarshalOptions{EmitUnpopulated: false}.Marshal\n")
+		b.WriteString("\n// SetProtoMarshaler replaces the protojson encoding every executor uses for\n")
+		b.WriteString("// tool responses, so tool results can match the server's other transports\n")
+		b.WriteString("// (for instance, 64-bit integers as JSON numbers). Call it before any\n")
+		b.WriteString("// executor runs.\n")
+		b.WriteString("func SetProtoMarshaler(fn ProtoMarshaler) {\n")
+		b.WriteString("\tif fn == nil {\n")
+		b.WriteString("\t\tpanic(\"gentools: proto marshaler is nil\")\n")
+		b.WriteString("\t}\n")
+		b.WriteString("\tprotoMarshaler = fn\n")
+		b.WriteString("}\n")
+
 		b.WriteString("\n// Executor provides auto-generated tool executors backed by gRPC.\n")
 		b.WriteString("type Executor struct {\n")
 		b.WriteString("\tconn grpc.ClientConnInterface\n")
@@ -448,8 +463,7 @@ func (c *Collector) Generate() string {
 			b.WriteString("\tif err != nil {\n")
 			b.WriteString("\t\treturn \"\", err\n")
 			b.WriteString("\t}\n")
-			b.WriteString("\tmopts := protojson.MarshalOptions{EmitUnpopulated: false}\n")
-			b.WriteString("\tout, err := mopts.Marshal(resp)\n")
+			b.WriteString("\tout, err := protoMarshaler(resp)\n")
 			b.WriteString("\tif err != nil {\n")
 			b.WriteString("\t\treturn \"\", fmt.Errorf(\"failed to marshal response: %w\", err)\n")
 			b.WriteString("\t}\n")

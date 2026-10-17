@@ -136,6 +136,15 @@ func IsOutputOnly(field protoreflect.FieldDescriptor) bool {
 	return hasFieldBehaviorValue(raw, 3)
 }
 
+// IsRequired checks if a field has REQUIRED field_behavior (value 2).
+func IsRequired(field protoreflect.FieldDescriptor) bool {
+	opts, ok := field.Options().(*descriptorpb.FieldOptions)
+	if !ok || opts == nil {
+		return false
+	}
+	return hasFieldBehaviorValue(opts.ProtoReflect().GetUnknown(), 2)
+}
+
 // --- Wire format parsing ---
 
 // findExtension scans unknown fields for a length-delimited extension with the

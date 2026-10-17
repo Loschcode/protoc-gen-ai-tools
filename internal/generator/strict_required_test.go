@@ -6,7 +6,9 @@ import (
 	"testing"
 
 	"google.golang.org/protobuf/compiler/protogen"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/pluginpb"
 )
@@ -34,6 +36,12 @@ func strictFile(t *testing.T) *protogen.File {
 	optionalEnum := enumField("sort", 4, ".test.v1.Sort")
 	optionalEnum.OneofIndex = proto.Int32(0)
 	optionalEnum.Proto3Optional = proto.Bool(true)
+	requiredKind := enumField("required_kind", 6, ".test.v1.Kind")
+	var behavior []byte
+	behavior = protowire.AppendTag(behavior, 1052, protowire.VarintType)
+	behavior = protowire.AppendVarint(behavior, 2)
+	requiredKind.Options = &descriptorpb.FieldOptions{}
+	requiredKind.Options.ProtoReflect().SetUnknown(protoreflect.RawFields(behavior))
 	repeatedKinds := enumField("kinds", 5, ".test.v1.Kind")
 	repeatedKinds.Label = descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum()
 
@@ -71,6 +79,7 @@ func strictFile(t *testing.T) *protogen.File {
 					enumField("direction", 3, ".test.v1.Direction"),
 					optionalEnum,
 					repeatedKinds,
+					requiredKind,
 				},
 			},
 		},
@@ -134,6 +143,8 @@ func TestStrict_EnumFiltersAcceptNull(t *testing.T) {
 		"sort":      true,  // proto3 optional
 		"direction": false, // zero value is a real choice
 		"kinds":     false, // repeated: an empty list is absence
+		// field_behavior REQUIRED: there is no "any" to send.
+		"required_kind": false,
 	}
 	for name, wantNullable := range cases {
 		if !required[name] {
@@ -163,6 +174,9 @@ func TestNonStrict_UnspecifiedEnumIsNotRequired(t *testing.T) {
 		}
 		if !required["direction"] {
 			t.Error("direction has no unset value and should stay required")
+		}
+		if !required["required_kind"] {
+			t.Error("required_kind is field_behavior REQUIRED and should stay required")
 		}
 	}
 }

@@ -212,7 +212,8 @@ func (sg *SchemaGenerator) messageSchema(msg protoreflect.MessageDescriptor) map
 		// An enum whose zero value is *_UNSPECIFIED can be absent too: proto3
 		// cannot tell zero from unset, and the zero value is left out of the
 		// enum list below. A list filter such as media_list.kind uses it to mean
-		// "any", and without null the model was forced to pick a kind.
+		// "any", and without null the model was forced to pick a kind. A field
+		// marked field_behavior REQUIRED has no "any", so it stays non-null.
 		isOptional := field.HasPresence() || hasUnspecifiedZero(field)
 
 		desc := sg.fieldDescription(field)
@@ -368,7 +369,7 @@ func (sg *SchemaGenerator) singularSchema(field protoreflect.FieldDescriptor) ma
 }
 
 func hasUnspecifiedZero(field protoreflect.FieldDescriptor) bool {
-	if field.Kind() != protoreflect.EnumKind || field.IsList() || field.IsMap() {
+	if field.Kind() != protoreflect.EnumKind || field.IsList() || field.IsMap() || annotations.IsRequired(field) {
 		return false
 	}
 	zero := field.Enum().Values().ByNumber(0)

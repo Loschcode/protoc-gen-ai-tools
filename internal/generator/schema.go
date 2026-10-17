@@ -31,7 +31,7 @@ func (sg *SchemaGenerator) Generate(msg protoreflect.MessageDescriptor) map[stri
 		return wkt
 	}
 
-	return objectAtRoot(sg.messageSchema(msg))
+	return objectAtRoot(sg.messageSchema(msg), sg.strict)
 }
 
 // objectAtRoot collapses a union into a single object.
@@ -49,11 +49,16 @@ func (sg *SchemaGenerator) Generate(msg protoreflect.MessageDescriptor) map[stri
 //
 // The branches of a oneof differ only in which mutually exclusive member they
 // carry, so their union describes the same message. A member required by only
-// some branches cannot be required overall, which leaves exactly the fields
-// every branch shares. Which members exclude each other belongs in the tool's
-// description, where the model reads it, not in a schema shape the provider
-// will not accept.
-func objectAtRoot(schema map[string]any) map[string]any {
+// some branches cannot be required as a value overall. Which members exclude
+// each other belongs in the tool's description, where the model reads it, not
+// in a schema shape the provider will not accept.
+//
+// Strict mode still wants every property listed in required, so there such a
+// member is required and nullable instead: leaving it out of required made
+// OpenAI reject the whole tool list over media_import's
+// assistant_attachment_id. protojson reads a null as unset, so the members the
+// model nulls out never reach the oneof.
+func objectAtRoot(schema map[string]any, strict bool) map[string]any {
 	if _, hasType := schema["type"]; hasType {
 		return schema
 	}
@@ -89,11 +94,29 @@ func objectAtRoot(schema map[string]any) map[string]any {
 		}
 	}
 
-	required := make([]string, 0, len(requiredCount))
-	for name, count := range requiredCount {
-		if count == len(branches) {
+	required := make([]string, 0, len(properties))
+	for name, definition := range properties {
+		if requiredCount[name] == len(branches) {
 			required = append(required, name)
+			continue
 		}
+		if !strict {
+			continue
+		}
+		if member, ok := definition.(map[string]any); ok {
+			inner := make(map[string]any, len(member))
+			for k, v := range member {
+				if k != "description" {
+					inner[k] = v
+				}
+			}
+			wrapper := nullable(inner)
+			if description, ok := member["description"]; ok {
+				wrapper["description"] = description
+			}
+			properties[name] = wrapper
+		}
+		required = append(required, name)
 	}
 	sort.Strings(required)
 
@@ -185,7 +208,12 @@ func (sg *SchemaGenerator) messageSchema(msg protoreflect.MessageDescriptor) map
 		//
 		// Repeated and map fields have no presence: an empty list is absence,
 		// and HasPresence is false for them, so they stay as they were.
-		isOptional := field.HasPresence()
+		//
+		// An enum whose zero value is *_UNSPECIFIED can be absent too: proto3
+		// cannot tell zero from unset, and the zero value is left out of the
+		// enum list below. A list filter such as media_list.kind uses it to mean
+		// "any", and without null the model was forced to pick a kind.
+		isOptional := field.HasPresence() || hasUnspecifiedZero(field)
 
 		desc := sg.fieldDescription(field)
 
@@ -337,6 +365,18 @@ func (sg *SchemaGenerator) singularSchema(field protoreflect.FieldDescriptor) ma
 	default:
 		return map[string]any{"type": "string"}
 	}
+}
+
+func hasUnspecifiedZero(field protoreflect.FieldDescriptor) bool {
+	if field.Kind() != protoreflect.EnumKind || field.IsList() || field.IsMap() {
+		return false
+	}
+	zero := field.Enum().Values().ByNumber(0)
+	if zero == nil {
+		return false
+	}
+	name := string(zero.Name())
+	return name == "UNSPECIFIED" || strings.HasSuffix(name, "_UNSPECIFIED")
 }
 
 func (sg *SchemaGenerator) enumSchema(enum protoreflect.EnumDescriptor) map[string]any {

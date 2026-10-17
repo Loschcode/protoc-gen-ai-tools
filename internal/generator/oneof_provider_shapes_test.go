@@ -46,16 +46,36 @@ func TestGenerate_RequestWithAOneofIsAnObjectAtItsRoot(t *testing.T) {
 			t.Errorf("%s was dropped, so that case can no longer be expressed", member)
 		}
 	}
-	// The shared field stays required; neither exclusive member can be.
+	// Strict mode lists every property in required, the exclusive members
+	// included, and lets those be null so the other case can still be sent.
 	required := toStringSet(schema["required"])
 	if !required["id"] {
 		t.Error("id is required by every branch and should stay required")
 	}
+	if isNullable(properties["id"]) {
+		t.Error("id is shared by every branch and should not become nullable")
+	}
 	for _, member := range []string{"image_data", "image_delete"} {
-		if required[member] {
-			t.Errorf("%s is required, which makes the other case impossible to send", member)
+		if !required[member] {
+			t.Errorf("%s is missing from required, which OpenAI strict mode rejects", member)
+		}
+		if !isNullable(properties[member]) {
+			t.Errorf("%s is required but not nullable, which makes the other case impossible to send", member)
 		}
 	}
+}
+
+func isNullable(raw any) bool {
+	schema, ok := raw.(map[string]any)
+	if !ok {
+		return false
+	}
+	branches, ok := schema["anyOf"].([]any)
+	if !ok {
+		return false
+	}
+	_, nulls := splitNullBranch(branches)
+	return nulls > 0
 }
 
 // A nullable message that is itself a union yields one flat anyOf, not a union
